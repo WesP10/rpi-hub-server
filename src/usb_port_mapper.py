@@ -247,6 +247,29 @@ class USBPortMapper:
 
         return removed_port_ids
 
+    def _find_cached_baud_rate(self, vendor_id: Optional[str], product_id: Optional[str], 
+                                serial_number: Optional[str], location: Optional[str]) -> Optional[int]:
+        """Find cached baud rate for a device based on stable identifiers.
+        
+        Args:
+            vendor_id: Vendor ID
+            product_id: Product ID
+            serial_number: Serial number
+            location: USB location
+            
+        Returns:
+            Cached baud rate or None if not found
+        """
+        for device_info in self.port_id_to_device_info.values():
+            # Match based on stable identifiers
+            if (device_info.vendor_id == vendor_id and 
+                device_info.product_id == product_id and
+                device_info.serial_number == serial_number and
+                device_info.location == location and
+                device_info.detected_baud is not None):
+                return device_info.detected_baud
+        return None
+
     async def _detect_baud_rate(self, device_path: str) -> int:
         """Detect baud rate by iteratively trying common rates.
 
@@ -351,8 +374,23 @@ class USBPortMapper:
             vendor_id = f"{port.vid:04x}" if port.vid else None
             product_id = f"{port.pid:04x}" if port.pid else None
             
-            # Iteratively detect baud rate by probing the device
-            detected_baud = await self._detect_baud_rate(port.device)
+            # Check if we have a cached baud rate for this device
+            cached_baud = self._find_cached_baud_rate(
+                vendor_id, product_id, port.serial_number, port.location
+            )
+            
+            if cached_baud is not None:
+                # Use cached baud rate
+                detected_baud = cached_baud
+                self.logger.debug(
+                    "baud_cached",
+                    f"Using cached baud rate {cached_baud} for {port.device}",
+                    device_path=port.device,
+                    baud_rate=cached_baud,
+                )
+            else:
+                # Probe for baud rate if not cached
+                detected_baud = await self._detect_baud_rate(port.device)
             
             device_info = DeviceInfo(
                 port_id="",  # Will be set later
@@ -516,12 +554,25 @@ class USBPortMapper:
             with open(self.persistence_path, "r") as f:
                 data = json.load(f)
 
-            # Note: We don't restore mappings directly as devices may have changed
-            # This just logs that we found the file
+            # Restore saved device info (especially baud rates) for matching
+            mappings = data.get("mappings", {})
+            for port_id, saved_info in mappings.items():
+                # Create device info from saved data
+                device_info = DeviceInfo(
+                    port_id=port_id,
+                    device_path=saved_info.get("device_path", ""),
+                    vendor_id=saved_info.get("vendor_id"),
+                    product_id=saved_info.get("product_id"),
+                    serial_number=saved_info.get("serial_number"),
+                    location=saved_info.get("location"),
+                    detected_baud=saved_info.get("detected_baud"),
+                )
+                self.port_id_to_device_info[port_id] = device_info
+
             self.logger.info(
                 "mappings_loaded",
-                f"Loaded {len(data.get('mappings', {}))} saved mappings",
-                count=len(data.get("mappings", {})),
+                f"Loaded {len(mappings)} saved mappings with cached baud rates",
+                count=len(mappings),
             )
 
         except Exception as e:
