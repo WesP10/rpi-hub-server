@@ -51,12 +51,19 @@ async def lifespan(app: FastAPI):
         }
     )
     
+    # Initialize variables to None to prevent UnboundLocalError in finally block
+    usb_mapper = None
+    serial_manager = None
+    buffer_manager = None
+    command_handler = None
+    health_reporter = None
+    hub_connection_manager = None
+    
     try:
         # Initialize USB Port Mapper
         logger.info("Initializing USB Port Mapper")
         usb_mapper = initialize_usb_port_mapper(
-            scan_interval=settings.serial.scan_interval,
-            prefer_arduino_cli=True
+            scan_interval=settings.serial.scan_interval
         )
         await usb_mapper.start()
         
