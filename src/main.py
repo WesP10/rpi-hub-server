@@ -67,9 +67,16 @@ async def lifespan(app: FastAPI):
         )
         await usb_mapper.start()
         
-        # Initialize Serial Manager with data callback
+        # Initialize Serial Manager
         logger.info("Initializing Serial Manager")
+        serial_manager = initialize_serial_manager(
+            max_connections=settings.serial.max_connections,
+            task_queue_size=settings.serial.task_queue_size,
+            connection_retry_attempts=settings.serial.connection_retry_attempts,
+            default_timeout=settings.serial.default_timeout
+        )
         
+        # Set data callback for forwarding serial data to Hub Agent
         def serial_data_callback(port_id: str, session_id: str, data: bytes):
             """Callback for serial data - forwards to Hub Agent."""
             if hub_agent and hub_agent.is_connected:
@@ -81,11 +88,7 @@ async def lifespan(app: FastAPI):
                     )
                 )
         
-        serial_manager = initialize_serial_manager(
-            data_callback=serial_data_callback,
-            max_retry_attempts=settings.serial.max_retry_attempts,
-            retry_delay=settings.serial.retry_delay
-        )
+        serial_manager.set_data_callback(serial_data_callback)
         
         # Initialize Buffer Manager
         logger.info("Initializing Buffer Manager")
