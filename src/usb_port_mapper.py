@@ -1,9 +1,9 @@
-"""USB Port Mapper with arduino-cli integration and hotplug detection."""
+"""USB Port Mapper with hotplug detection and iterative baud rate detection."""
 
 import asyncio
 import hashlib
 import json
-import subprocess
+import serial
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -12,6 +12,18 @@ from typing import Dict, List, Optional, Set
 import serial.tools.list_ports
 
 from src.logging_config import StructuredLogger
+
+# Common baud rates to try (in order of likelihood)
+COMMON_BAUD_RATES = [
+    115200,  # Most modern Arduino boards
+    9600,    # Default for many older boards
+    57600,   # Common alternative
+    38400,
+    19200,
+    74880,   # ESP8266 boot messages
+    230400,  # High-speed devices
+    250000,  # 3D printers (Marlin)
+]
 
 
 @dataclass
@@ -29,7 +41,7 @@ class DeviceInfo:
     detected_baud: Optional[int] = None
     description: str = ""
     hwid: str = ""
-    source: str = "unknown"  # Detection source: 'arduino-cli' or 'pyserial'
+    source: str = "pyserial"  # Detection source
 
 
 @dataclass
@@ -69,7 +81,6 @@ class USBPortMapper:
         self.last_scan_time: Optional[datetime] = None
         self._scan_task: Optional[asyncio.Task] = None
         self._running = False
-        self._arduino_cli_available: Optional[bool] = None
 
         # Hotplug callbacks
         self._device_connected_callbacks: List = []
@@ -85,7 +96,6 @@ class USBPortMapper:
         """
         self._running = True
         await self.load_mappings()
-        await self._check_arduino_cli()
 
         # Initial scan
         await self.refresh()
@@ -110,43 +120,6 @@ class USBPortMapper:
 
         await self.save_mappings()
         self.logger.info("usb_mapper_stopped", "USB Port Mapper stopped")
-
-    async def _check_arduino_cli(self) -> bool:
-        """Check if arduino-cli is available.
-
-        Returns:
-            True if arduino-cli is available
-        """
-        if self._arduino_cli_available is not None:
-            return self._arduino_cli_available
-
-        try:
-            result = await asyncio.create_subprocess_exec(
-                "arduino-cli",
-                "version",
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-            )
-            await result.communicate()
-            self._arduino_cli_available = result.returncode == 0
-
-            if self._arduino_cli_available:
-                self.logger.info(
-                    "arduino_cli_detected", "arduino-cli is available for baud detection"
-                )
-            else:
-                self.logger.warning(
-                    "arduino_cli_unavailable",
-                    "arduino-cli not available, using fallback detection",
-                )
-        except FileNotFoundError:
-            self._arduino_cli_available = False
-            self.logger.warning(
-                "arduino_cli_not_found",
-                "arduino-cli not found, using fallback baud detection",
-            )
-
-        return self._arduino_cli_available
 
     async def _scan_loop(self, interval: int) -> None:
         """Continuous scanning loop.
@@ -274,109 +247,95 @@ class USBPortMapper:
 
         return removed_port_ids
 
+    async def _detect_baud_rate(self, device_path: str) -> int:
+        """Detect baud rate by iteratively trying common rates.
+
+        Args:
+            device_path: Serial port device path
+
+        Returns:
+            Detected baud rate or default
+        """
+        loop = asyncio.get_event_loop()
+        
+        for baud_rate in COMMON_BAUD_RATES:
+            try:
+                # Attempt to open port at this baud rate (in executor to avoid blocking)
+                def try_open():
+                    try:
+                        ser = serial.Serial(
+                            port=device_path,
+                            baudrate=baud_rate,
+                            timeout=0.1,
+                            write_timeout=0.1,
+                        )
+                        # Wait briefly for connection to stabilize
+                        import time
+                        time.sleep(0.05)
+                        
+                        # Clear any existing data in buffer
+                        ser.reset_input_buffer()
+                        
+                        # Wait a moment for any auto-transmitted data
+                        time.sleep(0.1)
+                        
+                        # Check if there's data available (indicates active device)
+                        has_data = ser.in_waiting > 0
+                        ser.close()
+                        return (True, has_data)
+                    except (serial.SerialException, OSError):
+                        return (False, False)
+                    except Exception:
+                        return (False, False)
+                
+                success, has_data = await loop.run_in_executor(None, try_open)
+                
+                if success:
+                    if has_data:
+                        self.logger.info(
+                            "baud_detected",
+                            f"Detected baud rate {baud_rate} for {device_path}",
+                            device_path=device_path,
+                            baud_rate=baud_rate,
+                        )
+                    else:
+                        self.logger.debug(
+                            "baud_assumed",
+                            f"Assuming baud rate {baud_rate} for {device_path}",
+                            device_path=device_path,
+                            baud_rate=baud_rate,
+                        )
+                    return baud_rate
+                    
+            except Exception as e:
+                # Unexpected error, log and continue
+                self.logger.debug(
+                    "baud_probe_error",
+                    f"Error probing {baud_rate}: {e}",
+                    baud_rate=baud_rate,
+                    error=str(e),
+                )
+                continue
+        
+        # All attempts failed, use default
+        self.logger.warning(
+            "baud_fallback",
+            f"Could not detect baud rate for {device_path}, using default {self.default_baud_rate}",
+            device_path=device_path,
+            default_baud=self.default_baud_rate,
+        )
+        return self.default_baud_rate
+
     async def _list_ports_with_baud(self) -> List[DeviceInfo]:
-        """List all serial ports with baud rate detection.
+        """List all serial ports with iterative baud rate detection.
 
         Returns:
             List of device information
         """
-        devices = []
-
-        # Try arduino-cli first
-        if await self._check_arduino_cli():
-            arduino_devices = await self._detect_with_arduino_cli()
-            devices.extend(arduino_devices)
-
-        # Get all ports from pyserial (for devices arduino-cli might miss)
-        pyserial_devices = await self._detect_with_pyserial()
-
-        # Merge results, preferring arduino-cli baud rates
-        arduino_paths = {dev.device_path for dev in devices}
-        for pyserial_dev in pyserial_devices:
-            if pyserial_dev.device_path not in arduino_paths:
-                devices.append(pyserial_dev)
-
-        return devices
-
-    async def _detect_with_arduino_cli(self) -> List[DeviceInfo]:
-        """Detect ports using arduino-cli.
-
-        Returns:
-            List of detected devices with baud rates
-        """
-        try:
-            process = await asyncio.create_subprocess_exec(
-                "arduino-cli",
-                "board",
-                "list",
-                "--format",
-                "json",
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-            )
-
-            stdout, stderr = await process.communicate()
-
-            if process.returncode != 0:
-                self.logger.warning(
-                    "arduino_cli_error",
-                    "arduino-cli command failed",
-                    stderr=stderr.decode(),
-                )
-                return []
-
-            data = json.loads(stdout.decode())
-            devices = []
-
-            for detected in data.get("detected_ports", []):
-                port_data = detected.get("port", {})
-                device_path = port_data.get("address")
-
-                if not device_path:
-                    continue
-
-                properties = port_data.get("properties", {})
-                matching_boards = detected.get("matching_boards", [])
-
-                # Extract baud rate from matching board info (if available)
-                # Note: arduino-cli doesn't directly provide baud rate, but we can infer
-                # For now, we'll detect based on board type
-                detected_baud = None
-                if matching_boards:
-                    board_fqbn = matching_boards[0].get("fqbn", "")
-                    # Common Arduino baud rates by board type
-                    if "uno" in board_fqbn.lower() or "nano" in board_fqbn.lower():
-                        detected_baud = 115200
-                    elif "mega" in board_fqbn.lower():
-                        detected_baud = 115200
-                    elif "leonardo" in board_fqbn.lower():
-                        detected_baud = 9600
-
-                device_info = DeviceInfo(
-                    port_id="",  # Will be set later
-                    device_path=device_path,
-                    vendor_id=properties.get("vid"),
-                    product_id=properties.get("pid"),
-                    serial_number=properties.get("serialNumber"),
-                    description=port_data.get("protocol_label", ""),
-                    detected_baud=detected_baud,
-                    source="arduino-cli",
-                )
-
-                devices.append(device_info)
-
-            return devices
-
-        except Exception as e:
-            self.logger.error(
-                "arduino_cli_detection_error",
-                f"Error detecting with arduino-cli: {e}",
-                error=str(e),
-            )
-            return []
+        return await self._detect_with_pyserial()
 
     async def _detect_with_pyserial(self) -> List[DeviceInfo]:
-        """Detect ports using pyserial.
+        """Detect ports using pyserial with iterative baud rate detection.
 
         Returns:
             List of detected devices
@@ -388,18 +347,25 @@ class USBPortMapper:
         ports = await loop.run_in_executor(None, serial.tools.list_ports.comports)
 
         for port in ports:
+            # Format vendor and product IDs
+            vendor_id = f"{port.vid:04x}" if port.vid else None
+            product_id = f"{port.pid:04x}" if port.pid else None
+            
+            # Iteratively detect baud rate by probing the device
+            detected_baud = await self._detect_baud_rate(port.device)
+            
             device_info = DeviceInfo(
                 port_id="",  # Will be set later
                 device_path=port.device,
-                vendor_id=f"{port.vid:04x}" if port.vid else None,
-                product_id=f"{port.pid:04x}" if port.pid else None,
+                vendor_id=vendor_id,
+                product_id=product_id,
                 serial_number=port.serial_number,
                 manufacturer=port.manufacturer,
                 product=port.product,
                 location=port.location,
                 description=port.description,
                 hwid=port.hwid,
-                detected_baud=self.default_baud_rate,  # Use default
+                detected_baud=detected_baud,
                 source="pyserial",
             )
 
