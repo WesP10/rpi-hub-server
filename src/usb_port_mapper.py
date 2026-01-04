@@ -29,6 +29,7 @@ class DeviceInfo:
     detected_baud: Optional[int] = None
     description: str = ""
     hwid: str = ""
+    source: str = "unknown"  # Detection source: 'arduino-cli' or 'pyserial'
 
 
 @dataclass
@@ -201,7 +202,7 @@ class USBPortMapper:
                 vendor_id=device_info.vendor_id,
                 product_id=device_info.product_id,
                 detected_baud=device_info.detected_baud,
-                source="arduino-cli" if device_info.detected_baud else "pyserial",
+                source=device_info.source,
             )
 
         # Process removed devices
@@ -359,6 +360,7 @@ class USBPortMapper:
                     serial_number=properties.get("serialNumber"),
                     description=port_data.get("protocol_label", ""),
                     detected_baud=detected_baud,
+                    source="arduino-cli",
                 )
 
                 devices.append(device_info)
@@ -398,6 +400,7 @@ class USBPortMapper:
                 description=port.description,
                 hwid=port.hwid,
                 detected_baud=self.default_baud_rate,  # Use default
+                source="pyserial",
             )
 
             devices.append(device_info)
