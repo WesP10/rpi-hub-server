@@ -1,0 +1,308 @@
+"""
+FastAPI main application for RPi Hub Service.
+
+Manages lifespan of all service components and provides HTTP API endpoints.
+"""
+
+import asyncio
+from contextlib import asynccontextmanager
+from datetime import datetime
+
+from fastapi import FastAPI, Request
+from fastapi.responses import JSONResponse
+from fastapi.middleware.cors import CORSMiddleware
+
+from .config import get_settings
+from .logging_config import setup_logging, get_logger
+from .usb_port_mapper import initialize_usb_port_mapper
+from .serial_manager import initialize_serial_manager
+from .buffer_manager import initialize_buffer_manager
+from .hub_agent import HubAgent
+from .command_handler import initialize_command_handler
+from .health_reporter import initialize_health_reporter
+
+# Import API routers
+from .api import health_router, ports_router, connections_router, tasks_router
+
+# Setup logging
+setup_logging()
+logger = get_logger(__name__)
+
+# Global component instances
+hub_agent = None
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """
+    Manage application lifespan.
+    
+    Initializes all service components on startup and gracefully shuts down on exit.
+    """
+    global hub_agent
+    
+    settings = get_settings()
+    
+    logger.info(
+        "Starting RPi Hub Service",
+        extra={
+            "hub_id": settings.hub.hub_id,
+            "server_endpoint": settings.hub.server_endpoint
+        }
+    )
+    
+    try:
+        # Initialize USB Port Mapper
+        logger.info("Initializing USB Port Mapper")
+        usb_mapper = initialize_usb_port_mapper(
+            scan_interval=settings.serial.scan_interval,
+            prefer_arduino_cli=True
+        )
+        await usb_mapper.start()
+        
+        # Initialize Serial Manager with data callback
+        logger.info("Initializing Serial Manager")
+        
+        def serial_data_callback(port_id: str, session_id: str, data: bytes):
+            """Callback for serial data - forwards to Hub Agent."""
+            if hub_agent and hub_agent.is_connected:
+                asyncio.create_task(
+                    hub_agent.send_telemetry(
+                        port_id=port_id,
+                        session_id=session_id,
+                        data=data
+                    )
+                )
+        
+        serial_manager = initialize_serial_manager(
+            data_callback=serial_data_callback,
+            max_retry_attempts=settings.serial.max_retry_attempts,
+            retry_delay=settings.serial.retry_delay
+        )
+        
+        # Initialize Buffer Manager
+        logger.info("Initializing Buffer Manager")
+        buffer_manager = initialize_buffer_manager(
+            size_mb=settings.buffer.size_mb,
+            warn_threshold=settings.buffer.warn_threshold
+        )
+        
+        # Initialize Hub Agent
+        logger.info("Initializing Hub Agent")
+        hub_agent = HubAgent(
+            hub_id=settings.hub.hub_id,
+            server_endpoint=settings.hub.server_endpoint,
+            device_token=settings.hub.device_token,
+            buffer_manager=buffer_manager,
+            reconnect_interval=settings.hub.reconnect_interval,
+            max_reconnect_attempts=settings.hub.max_reconnect_attempts
+        )
+        
+        # Initialize Command Handler with task status callback
+        logger.info("Initializing Command Handler")
+        command_handler = initialize_command_handler(
+            task_status_callback=hub_agent.send_task_status_update,
+            max_concurrent_tasks=5
+        )
+        await command_handler.start()
+        
+        # Set Hub Agent command callback
+        async def handle_command(command_envelope):
+            """Handle incoming commands from server."""
+            try:
+                await command_handler.handle_command(command_envelope)
+            except Exception as e:
+                logger.error(
+                    f"Failed to handle command: {e}",
+                    extra={"command": command_envelope},
+                    exc_info=True
+                )
+        
+        hub_agent.set_command_callback(handle_command)
+        
+        # Initialize Health Reporter with callback
+        logger.info("Initializing Health Reporter")
+        health_reporter = initialize_health_reporter(
+            report_interval=settings.health.report_interval,
+            health_callback=lambda health_data: asyncio.create_task(
+                hub_agent.send_health_status(health_data)
+            )
+        )
+        await health_reporter.start()
+        
+        # Connect Hub Agent to server
+        logger.info("Connecting to server")
+        await hub_agent.connect_to_server()
+        
+        logger.info(
+            "RPi Hub Service started successfully",
+            extra={
+                "hub_id": settings.hub.hub_id,
+                "api_port": settings.api.port
+            }
+        )
+        
+        yield
+        
+    finally:
+        # Shutdown sequence
+        logger.info("Shutting down RPi Hub Service")
+        
+        try:
+            # Stop Health Reporter
+            if health_reporter:
+                logger.info("Stopping Health Reporter")
+                await health_reporter.stop()
+            
+            # Stop Command Handler
+            if command_handler:
+                logger.info("Stopping Command Handler")
+                await command_handler.stop()
+            
+            # Disconnect Hub Agent
+            if hub_agent:
+                logger.info("Disconnecting Hub Agent")
+                await hub_agent.disconnect_from_server()
+                await hub_agent.stop()
+            
+            # Stop Serial Manager
+            if serial_manager:
+                logger.info("Stopping Serial Manager")
+                await serial_manager.stop()
+            
+            # Stop USB Port Mapper
+            if usb_mapper:
+                logger.info("Stopping USB Port Mapper")
+                await usb_mapper.stop()
+            
+            logger.info("RPi Hub Service shutdown complete")
+            
+        except Exception as e:
+            logger.error(
+                f"Error during shutdown: {e}",
+                exc_info=True
+            )
+
+
+# Create FastAPI application
+app = FastAPI(
+    title="RPi Hub Service",
+    description="Raspberry Pi hub service for Arduino serial communication",
+    version="1.0.0",
+    lifespan=lifespan
+)
+
+# Add CORS middleware
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # Configure appropriately for production
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+
+# Request logging middleware
+@app.middleware("http")
+async def log_requests(request: Request, call_next):
+    """Log all HTTP requests."""
+    start_time = asyncio.get_event_loop().time()
+    
+    logger.info(
+        f"Request started",
+        extra={
+            "method": request.method,
+            "url": str(request.url),
+            "client": request.client.host if request.client else None
+        }
+    )
+    
+    try:
+        response = await call_next(request)
+        
+        duration_ms = (asyncio.get_event_loop().time() - start_time) * 1000
+        
+        logger.info(
+            f"Request completed",
+            extra={
+                "method": request.method,
+                "url": str(request.url),
+                "status_code": response.status_code,
+                "duration_ms": duration_ms
+            }
+        )
+        
+        return response
+        
+    except Exception as e:
+        duration_ms = (asyncio.get_event_loop().time() - start_time) * 1000
+        
+        logger.error(
+            f"Request failed: {e}",
+            extra={
+                "method": request.method,
+                "url": str(request.url),
+                "duration_ms": duration_ms
+            },
+            exc_info=True
+        )
+        raise
+
+
+# Exception handler
+@app.exception_handler(Exception)
+async def global_exception_handler(request: Request, exc: Exception):
+    """Handle uncaught exceptions."""
+    logger.error(
+        f"Unhandled exception: {exc}",
+        extra={
+            "method": request.method,
+            "url": str(request.url)
+        },
+        exc_info=True
+    )
+    
+    return JSONResponse(
+        status_code=500,
+        content={
+            "error": "Internal server error",
+            "detail": str(exc),
+            "timestamp": datetime.utcnow().isoformat()
+        }
+    )
+
+
+# Include routers
+app.include_router(health_router)
+app.include_router(ports_router)
+app.include_router(connections_router)
+app.include_router(tasks_router)
+
+
+# Root endpoint
+@app.get("/")
+async def root():
+    """Root endpoint with service information."""
+    settings = get_settings()
+    
+    return {
+        "service": "RPi Hub Service",
+        "version": "1.0.0",
+        "hub_id": settings.hub.hub_id,
+        "status": "running",
+        "timestamp": datetime.utcnow().isoformat()
+    }
+
+
+if __name__ == "__main__":
+    import uvicorn
+    
+    settings = get_settings()
+    
+    uvicorn.run(
+        "src.main:app",
+        host=settings.api.host,
+        port=settings.api.port,
+        reload=settings.api.reload,
+        log_level=settings.logging.level.lower()
+    )

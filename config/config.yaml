@@ -1,0 +1,39 @@
+hub:
+  hub_id: ${HUB_ID:rpi-bridge-01}
+  server_endpoint: ${SERVER_ENDPOINT:ws://localhost:8080/hub}
+  device_token: "${DEVICE_TOKEN:}"
+  reconnect_interval: 5
+  max_reconnect_attempts: 10
+
+serial:
+  default_baud_rate: ${DEFAULT_BAUD_RATE:9600}
+  scan_interval: ${PORT_SCAN_INTERVAL:2}
+  default_timeout: 1.0
+  max_connections: 10
+  task_queue_size: 100
+  connection_retry_attempts: ${CONNECTION_RETRY_ATTEMPTS:3}
+
+buffer:
+  size_mb: ${BUFFER_SIZE_MB:10}
+  warn_threshold: ${BUFFER_WARN_THRESHOLD:0.8}
+
+health:
+  report_interval: ${HEALTH_REPORT_INTERVAL:30}
+  cpu_threshold: 80.0
+  memory_threshold: 85.0
+
+storage:
+  artifact_cache_path: ${ARTIFACT_CACHE_PATH:/tmp/rpi-hub-artifacts}
+  artifact_retention_hours: ${ARTIFACT_RETENTION_HOURS:24}
+  port_mapping_file: ${PORT_MAPPING_FILE:/var/lib/rpi-hub/port_mappings.json}
+  log_directory: ${LOG_DIRECTORY:/var/log/rpi-hub}
+
+api:
+  host: ${API_HOST:0.0.0.0}
+  port: ${API_PORT:8000}
+  cors_origins:
+    - "*"
+
+logging:
+  level: ${LOG_LEVEL:INFO}
+  format: json

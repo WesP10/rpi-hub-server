@@ -1,0 +1,630 @@
+"""USB Port Mapper with arduino-cli integration and hotplug detection."""
+
+import asyncio
+import hashlib
+import json
+import subprocess
+from dataclasses import dataclass, field
+from datetime import datetime
+from pathlib import Path
+from typing import Dict, List, Optional, Set
+
+import serial.tools.list_ports
+
+from src.logging_config import StructuredLogger
+
+
+@dataclass
+class DeviceInfo:
+    """USB device information."""
+
+    port_id: str
+    device_path: str
+    vendor_id: Optional[str] = None
+    product_id: Optional[str] = None
+    serial_number: Optional[str] = None
+    manufacturer: Optional[str] = None
+    product: Optional[str] = None
+    location: Optional[str] = None
+    detected_baud: Optional[int] = None
+    description: str = ""
+    hwid: str = ""
+
+
+@dataclass
+class MappedConnection:
+    """Mapped connection information."""
+
+    port_id: str
+    device_path: str
+    device_info: DeviceInfo
+    is_available: bool = True
+    last_seen: datetime = field(default_factory=datetime.now)
+
+
+class USBPortMapper:
+    """Manages USB port detection and stable ID mapping."""
+
+    def __init__(
+        self,
+        persistence_path: str = "/var/lib/rpi-hub/port_mappings.json",
+        default_baud_rate: int = 9600,
+    ):
+        """Initialize USB Port Mapper.
+
+        Args:
+            persistence_path: Path to save port mappings
+            default_baud_rate: Default baud rate fallback
+        """
+        self.logger = StructuredLogger(__name__)
+        self.persistence_path = Path(persistence_path)
+        self.default_baud_rate = default_baud_rate
+
+        # Mappings
+        self.device_path_to_port_id: Dict[str, str] = {}
+        self.port_id_to_device_info: Dict[str, DeviceInfo] = {}
+
+        # Tracking
+        self.last_scan_time: Optional[datetime] = None
+        self._scan_task: Optional[asyncio.Task] = None
+        self._running = False
+        self._arduino_cli_available: Optional[bool] = None
+
+        # Hotplug callbacks
+        self._device_connected_callbacks: List = []
+        self._device_disconnected_callbacks: List = []
+
+        self.logger.info("usb_mapper_initialized", "USB Port Mapper initialized")
+
+    async def start(self, scan_interval: int = 2) -> None:
+        """Start continuous port scanning.
+
+        Args:
+            scan_interval: Scan interval in seconds
+        """
+        self._running = True
+        await self.load_mappings()
+        await self._check_arduino_cli()
+
+        # Initial scan
+        await self.refresh()
+
+        # Start scanning loop
+        self._scan_task = asyncio.create_task(self._scan_loop(scan_interval))
+        self.logger.info(
+            "usb_mapper_started",
+            "USB Port Mapper scanning started",
+            scan_interval=scan_interval,
+        )
+
+    async def stop(self) -> None:
+        """Stop port scanning."""
+        self._running = False
+        if self._scan_task:
+            self._scan_task.cancel()
+            try:
+                await self._scan_task
+            except asyncio.CancelledError:
+                pass
+
+        await self.save_mappings()
+        self.logger.info("usb_mapper_stopped", "USB Port Mapper stopped")
+
+    async def _check_arduino_cli(self) -> bool:
+        """Check if arduino-cli is available.
+
+        Returns:
+            True if arduino-cli is available
+        """
+        if self._arduino_cli_available is not None:
+            return self._arduino_cli_available
+
+        try:
+            result = await asyncio.create_subprocess_exec(
+                "arduino-cli",
+                "version",
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            await result.communicate()
+            self._arduino_cli_available = result.returncode == 0
+
+            if self._arduino_cli_available:
+                self.logger.info(
+                    "arduino_cli_detected", "arduino-cli is available for baud detection"
+                )
+            else:
+                self.logger.warning(
+                    "arduino_cli_unavailable",
+                    "arduino-cli not available, using fallback detection",
+                )
+        except FileNotFoundError:
+            self._arduino_cli_available = False
+            self.logger.warning(
+                "arduino_cli_not_found",
+                "arduino-cli not found, using fallback baud detection",
+            )
+
+        return self._arduino_cli_available
+
+    async def _scan_loop(self, interval: int) -> None:
+        """Continuous scanning loop.
+
+        Args:
+            interval: Scan interval in seconds
+        """
+        while self._running:
+            try:
+                await asyncio.sleep(interval)
+                await self.refresh()
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                self.logger.error(
+                    "scan_loop_error",
+                    f"Error in scan loop: {e}",
+                    error=str(e),
+                )
+
+    async def refresh(self) -> None:
+        """Scan for USB devices and update mappings."""
+        scan_start = datetime.now()
+
+        # Get current ports
+        new_devices = await self.detect_new_devices()
+        removed_devices = await self.detect_removed_devices()
+
+        # Process new devices
+        for device_info in new_devices:
+            port_id = await self.get_port_id(device_info.device_path, device_info)
+            device_info.port_id = port_id
+            self.port_id_to_device_info[port_id] = device_info
+            self.device_path_to_port_id[device_info.device_path] = port_id
+
+            # Trigger callbacks
+            for callback in self._device_connected_callbacks:
+                try:
+                    if asyncio.iscoroutinefunction(callback):
+                        await callback(device_info)
+                    else:
+                        callback(device_info)
+                except Exception as e:
+                    self.logger.error(
+                        "callback_error",
+                        f"Error in device connected callback: {e}",
+                        error=str(e),
+                    )
+
+            self.logger.port_detected(
+                port_id,
+                device_info.device_path,
+                vendor_id=device_info.vendor_id,
+                product_id=device_info.product_id,
+                detected_baud=device_info.detected_baud,
+                source="arduino-cli" if device_info.detected_baud else "pyserial",
+            )
+
+        # Process removed devices
+        for port_id in removed_devices:
+            device_info = self.port_id_to_device_info.get(port_id)
+            if device_info:
+                # Trigger callbacks
+                for callback in self._device_disconnected_callbacks:
+                    try:
+                        if asyncio.iscoroutinefunction(callback):
+                            await callback(device_info)
+                        else:
+                            callback(device_info)
+                    except Exception as e:
+                        self.logger.error(
+                            "callback_error",
+                            f"Error in device disconnected callback: {e}",
+                            error=str(e),
+                        )
+
+                self.logger.port_removed(port_id, device_path=device_info.device_path)
+
+                # Clean up mappings
+                self.device_path_to_port_id.pop(device_info.device_path, None)
+                self.port_id_to_device_info.pop(port_id, None)
+
+        self.last_scan_time = datetime.now()
+        scan_duration = (self.last_scan_time - scan_start).total_seconds() * 1000
+
+        self.logger.info(
+            "port_scan_completed",
+            f"Port scan completed in {scan_duration:.0f}ms",
+            duration_ms=scan_duration,
+            new_devices=len(new_devices),
+            removed_devices=len(removed_devices),
+            total_ports=len(self.port_id_to_device_info),
+        )
+
+    async def detect_new_devices(self) -> List[DeviceInfo]:
+        """Detect newly connected devices.
+
+        Returns:
+            List of new device info
+        """
+        current_ports = await self._list_ports_with_baud()
+        new_devices = []
+
+        for device_info in current_ports:
+            if device_info.device_path not in self.device_path_to_port_id:
+                new_devices.append(device_info)
+
+        return new_devices
+
+    async def detect_removed_devices(self) -> List[str]:
+        """Detect removed devices.
+
+        Returns:
+            List of removed port IDs
+        """
+        current_paths = {
+            info.device_path
+            for info in await self._list_ports_with_baud()
+        }
+
+        removed_port_ids = []
+        for device_path, port_id in list(self.device_path_to_port_id.items()):
+            if device_path not in current_paths:
+                removed_port_ids.append(port_id)
+
+        return removed_port_ids
+
+    async def _list_ports_with_baud(self) -> List[DeviceInfo]:
+        """List all serial ports with baud rate detection.
+
+        Returns:
+            List of device information
+        """
+        devices = []
+
+        # Try arduino-cli first
+        if await self._check_arduino_cli():
+            arduino_devices = await self._detect_with_arduino_cli()
+            devices.extend(arduino_devices)
+
+        # Get all ports from pyserial (for devices arduino-cli might miss)
+        pyserial_devices = await self._detect_with_pyserial()
+
+        # Merge results, preferring arduino-cli baud rates
+        arduino_paths = {dev.device_path for dev in devices}
+        for pyserial_dev in pyserial_devices:
+            if pyserial_dev.device_path not in arduino_paths:
+                devices.append(pyserial_dev)
+
+        return devices
+
+    async def _detect_with_arduino_cli(self) -> List[DeviceInfo]:
+        """Detect ports using arduino-cli.
+
+        Returns:
+            List of detected devices with baud rates
+        """
+        try:
+            process = await asyncio.create_subprocess_exec(
+                "arduino-cli",
+                "board",
+                "list",
+                "--format",
+                "json",
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+
+            stdout, stderr = await process.communicate()
+
+            if process.returncode != 0:
+                self.logger.warning(
+                    "arduino_cli_error",
+                    "arduino-cli command failed",
+                    stderr=stderr.decode(),
+                )
+                return []
+
+            data = json.loads(stdout.decode())
+            devices = []
+
+            for detected in data.get("detected_ports", []):
+                port_data = detected.get("port", {})
+                device_path = port_data.get("address")
+
+                if not device_path:
+                    continue
+
+                properties = port_data.get("properties", {})
+                matching_boards = detected.get("matching_boards", [])
+
+                # Extract baud rate from matching board info (if available)
+                # Note: arduino-cli doesn't directly provide baud rate, but we can infer
+                # For now, we'll detect based on board type
+                detected_baud = None
+                if matching_boards:
+                    board_fqbn = matching_boards[0].get("fqbn", "")
+                    # Common Arduino baud rates by board type
+                    if "uno" in board_fqbn.lower() or "nano" in board_fqbn.lower():
+                        detected_baud = 115200
+                    elif "mega" in board_fqbn.lower():
+                        detected_baud = 115200
+                    elif "leonardo" in board_fqbn.lower():
+                        detected_baud = 9600
+
+                device_info = DeviceInfo(
+                    port_id="",  # Will be set later
+                    device_path=device_path,
+                    vendor_id=properties.get("vid"),
+                    product_id=properties.get("pid"),
+                    serial_number=properties.get("serialNumber"),
+                    description=port_data.get("protocol_label", ""),
+                    detected_baud=detected_baud,
+                )
+
+                devices.append(device_info)
+
+            return devices
+
+        except Exception as e:
+            self.logger.error(
+                "arduino_cli_detection_error",
+                f"Error detecting with arduino-cli: {e}",
+                error=str(e),
+            )
+            return []
+
+    async def _detect_with_pyserial(self) -> List[DeviceInfo]:
+        """Detect ports using pyserial.
+
+        Returns:
+            List of detected devices
+        """
+        devices = []
+
+        # Run blocking operation in executor
+        loop = asyncio.get_event_loop()
+        ports = await loop.run_in_executor(None, serial.tools.list_ports.comports)
+
+        for port in ports:
+            device_info = DeviceInfo(
+                port_id="",  # Will be set later
+                device_path=port.device,
+                vendor_id=f"{port.vid:04x}" if port.vid else None,
+                product_id=f"{port.pid:04x}" if port.pid else None,
+                serial_number=port.serial_number,
+                manufacturer=port.manufacturer,
+                product=port.product,
+                location=port.location,
+                description=port.description,
+                hwid=port.hwid,
+                detected_baud=self.default_baud_rate,  # Use default
+            )
+
+            devices.append(device_info)
+
+        return devices
+
+    async def get_port_id(
+        self, device_path: str, device_info: Optional[DeviceInfo] = None
+    ) -> str:
+        """Get stable port ID for a device path.
+
+        Generates consistent ID based on USB location and serial number.
+
+        Args:
+            device_path: Device path (e.g., /dev/ttyUSB0)
+            device_info: Optional device information
+
+        Returns:
+            Stable port ID
+        """
+        # Check if we already have a mapping
+        if device_path in self.device_path_to_port_id:
+            return self.device_path_to_port_id[device_path]
+
+        # Generate stable ID from device characteristics
+        if device_info:
+            # Use location and serial number for stable ID
+            id_source = (
+                f"{device_info.location or ''}"
+                f"{device_info.serial_number or ''}"
+                f"{device_info.vendor_id or ''}"
+                f"{device_info.product_id or ''}"
+            )
+        else:
+            # Fallback to device path
+            id_source = device_path
+
+        # Generate short hash
+        hash_obj = hashlib.sha256(id_source.encode())
+        port_id = f"port_{hash_obj.hexdigest()[:8]}"
+
+        return port_id
+
+    async def get_device_info(self, port_id: str) -> Optional[DeviceInfo]:
+        """Get device information for a port ID.
+
+        Args:
+            port_id: Port identifier
+
+        Returns:
+            Device information or None if not found
+        """
+        return self.port_id_to_device_info.get(port_id)
+
+    async def list_mapped_connections(self) -> List[MappedConnection]:
+        """List all mapped connections.
+
+        Returns:
+            List of mapped connections
+        """
+        connections = []
+        for port_id, device_info in self.port_id_to_device_info.items():
+            connection = MappedConnection(
+                port_id=port_id,
+                device_path=device_info.device_path,
+                device_info=device_info,
+                is_available=True,
+            )
+            connections.append(connection)
+
+        return connections
+
+    async def remove_mapping(self, port_id: str) -> bool:
+        """Remove a port mapping.
+
+        Args:
+            port_id: Port identifier to remove
+
+        Returns:
+            True if removed, False if not found
+        """
+        device_info = self.port_id_to_device_info.get(port_id)
+        if not device_info:
+            return False
+
+        self.device_path_to_port_id.pop(device_info.device_path, None)
+        self.port_id_to_device_info.pop(port_id, None)
+
+        self.logger.info(
+            "mapping_removed",
+            f"Removed mapping for {port_id}",
+            port_id=port_id,
+        )
+
+        return True
+
+    async def save_mappings(self) -> None:
+        """Save port mappings to disk."""
+        try:
+            # Create directory if it doesn't exist
+            self.persistence_path.parent.mkdir(parents=True, exist_ok=True)
+
+            # Serialize mappings
+            data = {
+                "mappings": {
+                    port_id: {
+                        "device_path": info.device_path,
+                        "vendor_id": info.vendor_id,
+                        "product_id": info.product_id,
+                        "serial_number": info.serial_number,
+                        "location": info.location,
+                        "detected_baud": info.detected_baud,
+                    }
+                    for port_id, info in self.port_id_to_device_info.items()
+                },
+                "last_saved": datetime.now().isoformat(),
+            }
+
+            # Write to file
+            with open(self.persistence_path, "w") as f:
+                json.dump(data, f, indent=2)
+
+            self.logger.info(
+                "mappings_saved",
+                f"Saved {len(self.port_id_to_device_info)} mappings",
+                count=len(self.port_id_to_device_info),
+                path=str(self.persistence_path),
+            )
+
+        except Exception as e:
+            self.logger.error(
+                "mappings_save_error",
+                f"Error saving mappings: {e}",
+                error=str(e),
+            )
+
+    async def load_mappings(self) -> None:
+        """Load port mappings from disk."""
+        try:
+            if not self.persistence_path.exists():
+                self.logger.info(
+                    "no_mappings_file",
+                    "No existing mappings file found",
+                )
+                return
+
+            with open(self.persistence_path, "r") as f:
+                data = json.load(f)
+
+            # Note: We don't restore mappings directly as devices may have changed
+            # This just logs that we found the file
+            self.logger.info(
+                "mappings_loaded",
+                f"Loaded {len(data.get('mappings', {}))} saved mappings",
+                count=len(data.get("mappings", {})),
+            )
+
+        except Exception as e:
+            self.logger.error(
+                "mappings_load_error",
+                f"Error loading mappings: {e}",
+                error=str(e),
+            )
+
+    def on_device_connected(self, callback) -> None:
+        """Register callback for device connection events.
+
+        Args:
+            callback: Async or sync function(device_info: DeviceInfo)
+        """
+        self._device_connected_callbacks.append(callback)
+
+    def on_device_disconnected(self, callback) -> None:
+        """Register callback for device disconnection events.
+
+        Args:
+            callback: Async or sync function(device_info: DeviceInfo)
+        """
+        self._device_disconnected_callbacks.append(callback)
+
+
+# Global USB port mapper instance
+_usb_port_mapper: Optional[USBPortMapper] = None
+
+
+def get_usb_port_mapper() -> USBPortMapper:
+    """Get global USB Port Mapper instance.
+
+    Returns:
+        USBPortMapper instance
+
+    Raises:
+        RuntimeError: If USB port mapper not initialized
+    """
+    if _usb_port_mapper is None:
+        raise RuntimeError(
+            "USBPortMapper not initialized. Call initialize_usb_port_mapper() first."
+        )
+    return _usb_port_mapper
+
+
+def initialize_usb_port_mapper(
+    persistence_path: Optional[str] = None,
+    default_baud_rate: Optional[int] = None,
+    scan_interval: Optional[int] = None,
+) -> USBPortMapper:
+    """Initialize USB Port Mapper instance.
+
+    Args:
+        persistence_path: Path to save port mappings
+        default_baud_rate: Default baud rate fallback
+        scan_interval: Port scan interval (unused, for API compatibility)
+
+    Returns:
+        USBPortMapper instance
+    """
+    global _usb_port_mapper
+    
+    if _usb_port_mapper is not None:
+        return _usb_port_mapper
+    
+    from src.config import get_settings
+
+    settings = get_settings()
+    _usb_port_mapper = USBPortMapper(
+        persistence_path=persistence_path or settings.storage.port_mapping_file,
+        default_baud_rate=default_baud_rate or settings.serial.default_baud_rate,
+    )
+    
+    return _usb_port_mapper
