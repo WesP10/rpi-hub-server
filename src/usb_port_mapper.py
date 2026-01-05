@@ -15,8 +15,8 @@ from src.logging_config import StructuredLogger
 
 # Common baud rates to try (in order of likelihood)
 COMMON_BAUD_RATES = [
-    115200,  # Most modern Arduino boards
-    9600,    # Default for many older boards
+    9600,    # Most common for Arduino
+    115200,  # Modern Arduino boards
     57600,   # Common alternative
     38400,
     19200,
