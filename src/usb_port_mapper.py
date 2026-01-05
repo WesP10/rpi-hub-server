@@ -289,29 +289,34 @@ class USBPortMapper:
                         ser = serial.Serial(
                             port=device_path,
                             baudrate=baud_rate,
-                            timeout=0.1,
-                            write_timeout=0.1,
+                            timeout=1.0,
+                            write_timeout=1.0,
                         )
-                        # Wait briefly for connection to stabilize
+                        
+                        # Clear any existing data in buffer first
                         import time
-                        time.sleep(0.05)
+                        ser.reset_input_buffer()
                         
                         # Reset Arduino by toggling DTR (required for auto-start on RPi)
                         ser.dtr = False
                         time.sleep(0.1)
                         ser.dtr = True
-                        time.sleep(0.3)  # Wait for Arduino to reset and start transmitting
                         
-                        # Clear any existing data in buffer
-                        ser.reset_input_buffer()
-                        
-                        # Wait a moment for any auto-transmitted data
-                        time.sleep(0.1)
+                        # Wait for Arduino to reset and start transmitting
+                        time.sleep(1.65)
                         
                         # Check if there's data available (indicates active device)
                         has_data = ser.in_waiting > 0
+                        
+                        if has_data:
+                            # Read a sample to verify it's not all nulls
+                            sample = ser.read(min(ser.in_waiting, 64))
+                            non_null_bytes = sum(1 for b in sample if b != 0)
+                            ser.close()
+                            return (True, non_null_bytes > 0)
+                        
                         ser.close()
-                        return (True, has_data)
+                        return (True, False)
                     except (serial.SerialException, OSError):
                         return (False, False)
                     except Exception:
