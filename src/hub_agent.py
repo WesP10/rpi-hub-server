@@ -101,13 +101,46 @@ class HubAgent:
             True if connected successfully
         """
         try:
+            # Parse endpoint for logging
+            from urllib.parse import urlparse
+            parsed = urlparse(self.server_endpoint)
+            
             self.logger.info(
                 "ws_connecting",
                 f"Connecting to {self.server_endpoint}",
                 endpoint=self.server_endpoint,
+                scheme=parsed.scheme,
+                host=parsed.hostname,
+                port=parsed.port or (443 if parsed.scheme == "wss" else 80),
+                path=parsed.path,
             )
+            
+            # Check DNS resolution if not localhost
+            if parsed.hostname and parsed.hostname not in ["localhost", "127.0.0.1"]:
+                try:
+                    import socket
+                    resolved_ip = socket.gethostbyname(parsed.hostname)
+                    self.logger.info(
+                        "dns_resolved",
+                        f"Resolved {parsed.hostname} to {resolved_ip}",
+                        hostname=parsed.hostname,
+                        ip=resolved_ip,
+                    )
+                except socket.gaierror as dns_error:
+                    self.logger.error(
+                        "dns_resolution_failed",
+                        f"Failed to resolve hostname {parsed.hostname}: {dns_error}",
+                        hostname=parsed.hostname,
+                        error=str(dns_error),
+                    )
+                    raise
 
             # Connect to WebSocket
+            self.logger.info(
+                "ws_attempting_connection",
+                f"Attempting WebSocket connection with ping_interval=20s, ping_timeout=10s",
+            )
+            
             self.ws_connection = await websockets.connect(
                 self.server_endpoint,
                 ping_interval=20,
@@ -142,11 +175,33 @@ class HubAgent:
 
         except Exception as e:
             self.is_connected = False
+            
+            # Extract more details for common error types
+            error_details = {
+                "error": str(e),
+                "error_type": type(e).__name__,
+                "endpoint": self.server_endpoint,
+            }
+            
+            # Add errno for OSError/ConnectionRefusedError
+            if hasattr(e, 'errno'):
+                error_details["errno"] = e.errno
+                
+            # Add specific messages for common errors
+            error_msg = f"Error connecting to server: {e}"
+            if "Connection refused" in str(e) or (hasattr(e, 'errno') and e.errno == 111):
+                error_msg += " - The server is not accepting connections. Check if the cloud service is running and accessible from this device."
+            elif "Name or service not known" in str(e) or "getaddrinfo failed" in str(e):
+                error_msg += " - DNS resolution failed. Check the hostname in SERVER_ENDPOINT."
+            elif "Network is unreachable" in str(e):
+                error_msg += " - Network unreachable. Check your network connection."
+            elif "timed out" in str(e).lower():
+                error_msg += " - Connection timed out. Check if the server is accessible and not blocked by firewall."
+            
             self.logger.error(
                 "ws_connection_error",
-                f"Error connecting to server: {e}",
-                error=str(e),
-                error_type=type(e).__name__,
+                error_msg,
+                **error_details,
             )
 
             # Schedule reconnection

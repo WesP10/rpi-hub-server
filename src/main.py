@@ -47,9 +47,24 @@ async def lifespan(app: FastAPI):
         "Starting RPi Hub Service",
         extra={
             "hub_id": settings.hub.hub_id,
-            "server_endpoint": settings.hub.server_endpoint
+            "server_endpoint": settings.hub.server_endpoint,
+            "device_token_set": bool(settings.hub.device_token),
+            "device_token_length": len(settings.hub.device_token) if settings.hub.device_token else 0,
         }
     )
+    
+    # Log critical connection parameters for debugging
+    if settings.hub.server_endpoint == "ws://localhost:8080/hub":
+        logger.warning(
+            "Using default localhost endpoint - ensure cloud service is accessible",
+            extra={"server_endpoint": settings.hub.server_endpoint}
+        )
+    
+    if not settings.hub.device_token:
+        logger.warning(
+            "DEVICE_TOKEN is not set - authentication will fail",
+            extra={"hub_id": settings.hub.hub_id}
+        )
     
     # Initialize variables to None to prevent UnboundLocalError in finally block
     usb_mapper = None

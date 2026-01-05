@@ -49,9 +49,13 @@ cp .env.example .env
 2. Edit `.env` with your settings:
 ```env
 HUB_ID=rpi-bridge-01
-SERVER_ENDPOINT=ws://your-server:8080/hub
-DEVICE_TOKEN=your-device-token
+SERVER_ENDPOINT=ws://YOUR_CLOUD_SERVER_IP:8080/hub
+DEVICE_TOKEN=dev-token-rpi-bridge-01
 ```
+
+**Important:** Replace `YOUR_CLOUD_SERVER_IP` with:
+- Your cloud service machine's IP address (e.g., `192.168.1.100`)
+- Or `localhost` if running both services on the same machine
 
 3. Adjust `config/config.yaml` as needed.
 
