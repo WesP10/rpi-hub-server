@@ -334,9 +334,9 @@ async def lifespan(app: FastAPI):
         )
         await health_reporter.start()
         
-        # Connect Hub Agent to server
-        logger.info("Connecting to server")
-        await hub_agent.connect_to_server()
+        # Start Hub Agent (sets _running=True and connects to server)
+        logger.info("Starting Hub Agent")
+        await hub_agent.start()
         
         logger.info(
             "RPi Hub Service started successfully",
