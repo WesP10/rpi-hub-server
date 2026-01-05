@@ -77,12 +77,9 @@ def auto_detect_baud_rate(port_path):
                 bytesize=8,
                 stopbits=1,
                 parity='N',
-                timeout=0.1,
-                write_timeout=0.1,
+                timeout=1.0,
+                write_timeout=1.0,
             )
-            
-            # Wait briefly for connection to stabilize
-            time.sleep(0.05)
             
             # Clear any existing data in buffer first
             ser.reset_input_buffer()
@@ -92,8 +89,8 @@ def auto_detect_baud_rate(port_path):
             time.sleep(0.1)
             ser.dtr = True
             
-            # Wait for Arduino to reset and start transmitting
-            time.sleep(0.5)
+            # Wait for Arduino to reset and start transmitting (same as manual test)
+            time.sleep(2.0)
             
             # Check if there's data available (indicates active device)
             has_data = ser.in_waiting > 0
@@ -115,6 +112,9 @@ def auto_detect_baud_rate(port_path):
             else:
                 ser.close()
                 print(f" ✗ No data")
+            
+            # Small delay between attempts to let port settle
+            time.sleep(0.2)
                 
         except serial.SerialException as e:
             print(f" ✗ Error: {e}")
