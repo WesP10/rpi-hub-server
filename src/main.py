@@ -43,6 +43,17 @@ async def lifespan(app: FastAPI):
     
     settings = get_settings()
     
+    # Log environment variables being used
+    import os
+    logger.info(
+        "Environment variables check",
+        extra={
+            "HUB_ID_env": os.getenv("HUB_ID", "NOT SET"),
+            "SERVER_ENDPOINT_env": os.getenv("SERVER_ENDPOINT", "NOT SET"),
+            "DEVICE_TOKEN_env": "SET" if os.getenv("DEVICE_TOKEN") else "NOT SET",
+        }
+    )
+    
     logger.info(
         "Starting RPi Hub Service",
         extra={
@@ -57,7 +68,10 @@ async def lifespan(app: FastAPI):
     if settings.hub.server_endpoint == "ws://localhost:8080/hub":
         logger.warning(
             "Using default localhost endpoint - ensure cloud service is accessible",
-            extra={"server_endpoint": settings.hub.server_endpoint}
+            extra={
+                "server_endpoint": settings.hub.server_endpoint,
+                "hint": "Set SERVER_ENDPOINT environment variable or update config/config.yaml"
+            }
         )
     
     if not settings.hub.device_token:

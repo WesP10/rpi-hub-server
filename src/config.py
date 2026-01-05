@@ -9,6 +9,10 @@ import yaml
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+# Load .env file at module import
+from dotenv import load_dotenv
+load_dotenv()
+
 
 class HubConfig(BaseSettings):
     """Hub-specific configuration."""
