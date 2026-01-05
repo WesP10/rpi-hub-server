@@ -4,6 +4,7 @@ import asyncio
 import hashlib
 import json
 import serial
+import time
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
