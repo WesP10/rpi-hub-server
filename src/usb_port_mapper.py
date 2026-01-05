@@ -303,7 +303,7 @@ class USBPortMapper:
                         ser.dtr = True
                         
                         # Wait for Arduino to reset and start transmitting
-                        time.sleep(1.65)
+                        time.sleep(1.8)
                         
                         # Check if there's data available (indicates active device)
                         has_data = ser.in_waiting > 0

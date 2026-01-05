@@ -127,6 +127,10 @@ async def lifespan(app: FastAPI):
         def serial_data_callback(port_id: str, session_id: str, data: bytes):
             """Callback for serial data - forwards to Hub Agent."""
             try:
+                # Skip empty data
+                if not data:
+                    return
+                
                 logger.info(
                     f"Serial data callback invoked for {port_id}",
                     extra={
