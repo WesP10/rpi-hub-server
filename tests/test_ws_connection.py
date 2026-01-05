@@ -2,10 +2,11 @@
 Test script for WebSocket connection and message envelope testing.
 
 This script:
-1. Establishes WebSocket connection to rpi-hub-service
-2. Tests sending different envelope types (telemetry, health, device_event, task_status)
-3. Tests automatic serial reading with pyserial
-4. Verifies message routing and buffer management
+1. Verifies rpi-hub-service is running before attempting tests
+2. Establishes WebSocket connection with retry logic
+3. Tests sending different envelope types (telemetry, health, device_event, task_status)
+4. Tests automatic serial reading with pyserial
+5. Verifies message routing and buffer management
 """
 
 import asyncio
@@ -13,8 +14,10 @@ import base64
 import json
 import sys
 import time
+import socket
 from datetime import datetime
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, List, Tuple
+from urllib.parse import urlparse
 
 import websockets
 from websockets.exceptions import ConnectionClosed, WebSocketException
@@ -46,57 +49,158 @@ class WebSocketTester:
         self.ws_connection: Optional[websockets.WebSocketClientProtocol] = None
         self.is_connected = False
         self.received_messages = []
+        self.test_results: List[Tuple[str, bool, str]] = []
         
-    async def connect(self) -> bool:
-        """Establish WebSocket connection.
+    def check_service_running(self) -> Tuple[bool, str]:
+        """Check if the service is actually running on the target port.
+        
+        Returns:
+            Tuple of (is_running, message)
+        """
+        try:
+            parsed = urlparse(self.endpoint)
+            host = parsed.hostname or 'localhost'
+            port = parsed.port or 8000
+            
+            # Try to connect to the TCP port
+            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            sock.settimeout(2)
+            result = sock.connect_ex((host, port))
+            sock.close()
+            
+            if result == 0:
+                return True, f"Service is listening on {host}:{port}"
+            else:
+                return False, f"Nothing listening on {host}:{port}"
+                
+        except socket.gaierror:
+            return False, f"Cannot resolve hostname: {host}"
+        except Exception as e:
+            return False, f"Error checking service: {e}"
+        
+    async def connect(self, max_retries: int = 3, timeout: float = 5.0) -> bool:
+        """Establish WebSocket connection with retry logic.
+        
+        Args:
+            max_retries: Maximum number of connection attempts
+            timeout: Timeout per attempt in seconds
         
         Returns:
             True if connected successfully
         """
-        try:
-            print(f"\n{'='*60}")
-            print(f"TEST 1: WebSocket Connection")
-            print(f"{'='*60}")
-            print(f"Connecting to: {self.endpoint}")
-            print(f"Hub ID: {self.hub_id}")
-            
-            # Connect with ping settings
-            self.ws_connection = await websockets.connect(
-                self.endpoint,
-                ping_interval=20,
-                ping_timeout=10,
-            )
-            
-            # Send handshake
-            handshake = {
-                "type": "hub_connect",
-                "hubId": self.hub_id,
-                "deviceToken": self.device_token,
-                "timestamp": datetime.now().isoformat(),
-                "version": "1.0.0",
-            }
-            
-            await self.ws_connection.send(json.dumps(handshake))
-            print(f"✓ Handshake sent")
-            
-            self.is_connected = True
-            print(f"✓ WebSocket connection established")
-            
-            # Start receiver task
-            asyncio.create_task(self._receive_loop())
-            
-            return True
-            
-        except Exception as e:
-            print(f"✗ Connection failed: {e}")
+        print(f"\n{'='*60}")
+        print(f"TEST 1: WebSocket Connection")
+        print(f"{'='*60}")
+        
+        # First check if service is running
+        is_running, check_message = self.check_service_running()
+        print(f"Checking service: {check_message}")
+        
+        if not is_running:
+            print(f"\nERROR: Service is not running!")
+            print(f"Start the service with:")
+            print(f"  cd rpi-hub-service")
+            print(f"  python -m uvicorn src.main:app --host 0.0.0.0 --port 8000")
+            self.test_results.append(("Service Check", False, check_message))
             return False
+        
+        self.test_results.append(("Service Check", True, check_message))
+        
+        # Attempt connection with retries
+        for attempt in range(max_retries):
+            try:
+                print(f"\nAttempt {attempt + 1}/{max_retries}")
+                print(f"Connecting to: {self.endpoint}")
+                print(f"Hub ID: {self.hub_id}")
+                print(f"Timeout: {timeout}s")
+                
+                # Connect with ping settings and timeout
+                self.ws_connection = await asyncio.wait_for(
+                    websockets.connect(
+                        self.endpoint,
+                        ping_interval=20,
+                        ping_timeout=10,
+                    ),
+                    timeout=timeout
+                )
+                
+                # Send handshake
+                handshake = {
+                    "type": "hub_connect",
+                    "hubId": self.hub_id,
+                    "deviceToken": self.device_token,
+                    "timestamp": datetime.now().isoformat(),
+                    "version": "1.0.0",
+                }
+                
+                await self.ws_connection.send(json.dumps(handshake))
+                print(f"Handshake sent")
+                
+                self.is_connected = True
+                print(f"Connection established on attempt {attempt + 1}")
+                
+                # Start receiver task
+                asyncio.create_task(self._receive_loop())
+                
+                self.test_results.append(("WebSocket Connection", True, f"Connected on attempt {attempt + 1}"))
+                return True
+                
+            except asyncio.TimeoutError:
+                error_msg = f"Connection timeout after {timeout}s"
+                if attempt < max_retries - 1:
+                    wait_time = 2 ** attempt
+                    print(f"Timeout - retrying in {wait_time}s...")
+                    await asyncio.sleep(wait_time)
+                else:
+                    print(f"All {max_retries} connection attempts timed out")
+                    self.test_results.append(("WebSocket Connection", False, error_msg))
+                    
+            except (ConnectionRefusedError, OSError) as e:
+                error_msg = f"Connection refused: {e}"
+                if attempt < max_retries - 1:
+                    wait_time = 2 ** attempt
+                    print(f"Connection refused - retrying in {wait_time}s...")
+                    await asyncio.sleep(wait_time)
+                else:
+                    print(f"Connection refused after {max_retries} attempts")
+                    print(f"\nPossible issues:")
+                    print(f"  1. Service endpoint might be different (check port number)")
+                    print(f"  2. Service may be starting up (takes a few seconds)")
+                    print(f"  3. Firewall blocking connection")
+                    self.test_results.append(("WebSocket Connection", False, error_msg))
+                    
+            except WebSocketException as e:
+                error_msg = f"WebSocket error: {e}"
+                print(f"WebSocket error: {e}")
+                if attempt < max_retries - 1:
+                    wait_time = 2 ** attempt
+                    print(f"Retrying in {wait_time}s...")
+                    await asyncio.sleep(wait_time)
+                else:
+                    self.test_results.append(("WebSocket Connection", False, error_msg))
+                    
+            except Exception as e:
+                error_msg = f"Unexpected error: {e}"
+                print(f"Connection failed: {e}")
+                if attempt < max_retries - 1:
+                    wait_time = 2 ** attempt
+                    print(f"Retrying in {wait_time}s...")
+                    await asyncio.sleep(wait_time)
+                else:
+                    self.test_results.append(("WebSocket Connection", False, error_msg))
+        
+        print(f"\nFailed to connect after {max_retries} attempts")
+        return False
     
     async def disconnect(self):
         """Close WebSocket connection."""
         if self.ws_connection:
-            await self.ws_connection.close()
-            self.is_connected = False
-            print(f"✓ Disconnected from server")
+            try:
+                await self.ws_connection.close()
+                self.is_connected = False
+                print(f"Disconnected from server")
+            except Exception as e:
+                print(f"Error during disconnect: {e}")
     
     async def _receive_loop(self):
         """Receive and log messages from server."""
@@ -105,14 +209,17 @@ class WebSocketTester:
                 message = await self.ws_connection.recv()
                 data = json.loads(message)
                 self.received_messages.append(data)
-                print(f"← Received: {data.get('type', 'unknown')} message")
+                msg_type = data.get('type', 'unknown')
+                print(f"  <- Received: {msg_type}")
                 
             except ConnectionClosed:
-                print("✗ Connection closed by server")
+                print(f"Connection closed by server")
                 self.is_connected = False
                 break
+            except json.JSONDecodeError as e:
+                print(f"Invalid JSON received: {e}")
             except Exception as e:
-                print(f"✗ Receive error: {e}")
+                print(f"Receive error: {e}")
                 break
     
     async def send_telemetry_envelope(self, port_id: str, data: bytes):
@@ -127,7 +234,8 @@ class WebSocketTester:
         print(f"{'='*60}")
         
         if not self.is_connected:
-            print("✗ Not connected to server")
+            print("ERROR: Not connected to server")
+            self.test_results.append(("Telemetry Envelope", False, "Not connected"))
             return
         
         try:
@@ -142,15 +250,17 @@ class WebSocketTester:
             }
             
             await self.ws_connection.send(json.dumps(envelope))
-            print(f"✓ Sent telemetry envelope")
+            print(f"Sent telemetry envelope")
             print(f"  Port: {port_id}")
             print(f"  Data length: {len(data)} bytes")
             print(f"  Data (hex): {data.hex()}")
             
             await asyncio.sleep(0.5)
+            self.test_results.append(("Telemetry Envelope", True, "Sent successfully"))
             
         except Exception as e:
-            print(f"✗ Failed to send telemetry: {e}")
+            print(f"Failed to send telemetry: {e}")
+            self.test_results.append(("Telemetry Envelope", False, str(e)))
     
     async def send_health_envelope(self):
         """Test sending health envelope."""
@@ -159,7 +269,8 @@ class WebSocketTester:
         print(f"{'='*60}")
         
         if not self.is_connected:
-            print("✗ Not connected to server")
+            print("ERROR: Not connected to server")
+            self.test_results.append(("Health Envelope", False, "Not connected"))
             return
         
         try:
@@ -214,15 +325,17 @@ class WebSocketTester:
             }
             
             await self.ws_connection.send(json.dumps(envelope))
-            print(f"✓ Sent health envelope")
+            print(f"Sent health envelope")
             print(f"  CPU: {envelope['system']['cpu']['percent']}%")
             print(f"  Memory: {envelope['system']['memory']['percent']}%")
             print(f"  Active connections: {envelope['service']['serial']['active_connections']}")
             
             await asyncio.sleep(0.5)
+            self.test_results.append(("Health Envelope", True, "Sent successfully"))
             
         except Exception as e:
-            print(f"✗ Failed to send health: {e}")
+            print(f"Failed to send health: {e}")
+            self.test_results.append(("Health Envelope", False, str(e)))
     
     async def send_device_event_envelope(self, port_id: str, event_type: str = "connected"):
         """Test sending device event envelope.
@@ -236,7 +349,8 @@ class WebSocketTester:
         print(f"{'='*60}")
         
         if not self.is_connected:
-            print("✗ Not connected to server")
+            print("ERROR: Not connected to server")
+            self.test_results.append(("Device Event Envelope", False, "Not connected"))
             return
         
         try:
@@ -258,14 +372,16 @@ class WebSocketTester:
             }
             
             await self.ws_connection.send(json.dumps(envelope))
-            print(f"✓ Sent device event envelope")
+            print(f"Sent device event envelope")
             print(f"  Event: {event_type}")
             print(f"  Port: {port_id}")
             
             await asyncio.sleep(0.5)
+            self.test_results.append(("Device Event Envelope", True, "Sent successfully"))
             
         except Exception as e:
-            print(f"✗ Failed to send device event: {e}")
+            print(f"Failed to send device event: {e}")
+            self.test_results.append(("Device Event Envelope", False, str(e)))
     
     async def send_task_status_envelope(self, task_id: str, status: str = "completed"):
         """Test sending task status envelope.
@@ -279,7 +395,8 @@ class WebSocketTester:
         print(f"{'='*60}")
         
         if not self.is_connected:
-            print("✗ Not connected to server")
+            print("ERROR: Not connected to server")
+            self.test_results.append(("Task Status Envelope", False, "Not connected"))
             return
         
         try:
@@ -297,14 +414,48 @@ class WebSocketTester:
             }
             
             await self.ws_connection.send(json.dumps(envelope))
-            print(f"✓ Sent task status envelope")
+            print(f"Sent task status envelope")
             print(f"  Task ID: {task_id}")
             print(f"  Status: {status}")
             
             await asyncio.sleep(0.5)
+            self.test_results.append(("Task Status Envelope", True, "Sent successfully"))
             
         except Exception as e:
-            print(f"✗ Failed to send task status: {e}")
+            print(f"Failed to send task status: {e}")
+            self.test_results.append(("Task Status Envelope", False, str(e)))
+    
+    def print_test_summary(self):
+        """Print a summary of all test results."""
+        print(f"\n{'='*60}")
+        print(f"TEST RESULTS SUMMARY")
+        print(f"{'='*60}")
+        
+        if not self.test_results:
+            print("No tests were run")
+            return
+        
+        passed = sum(1 for _, success, _ in self.test_results if success)
+        failed = len(self.test_results) - passed
+        
+        for test_name, success, message in self.test_results:
+            status = "PASS" if success else "FAIL"
+            symbol = "✓" if success else "✗"
+            print(f"{symbol} {test_name}: {status}")
+            if not success and message:
+                print(f"    Error: {message}")
+        
+        print(f"\nTotal: {passed} passed, {failed} failed")
+        
+        if self.received_messages:
+            print(f"\nReceived {len(self.received_messages)} message(s) from server:")
+            for i, msg in enumerate(self.received_messages, 1):
+                msg_type = msg.get('type', 'unknown')
+                print(f"  {i}. {msg_type}")
+        else:
+            print(f"\nNo messages received from server")
+        
+        return passed == len(self.test_results)
 
 
 class SerialTester:
@@ -318,21 +469,26 @@ class SerialTester:
         print(f"{'='*60}")
         
         if not SERIAL_AVAILABLE:
-            print("✗ pyserial not available")
+            print("ERROR: pyserial not available")
+            print("Install with: pip install pyserial")
             return []
         
         try:
             ports = list(list_ports.comports())
             
             if not ports:
-                print("✗ No serial ports detected")
+                print("No serial ports detected")
+                print("\nThis is normal if:")
+                print("  - No USB serial devices are connected")
+                print("  - Running in a virtual environment without USB access")
                 return []
             
-            print(f"✓ Found {len(ports)} serial port(s):")
+            print(f"Found {len(ports)} serial port(s):")
             for port in ports:
                 print(f"  - {port.device}")
                 print(f"    Description: {port.description}")
-                print(f"    Manufacturer: {port.manufacturer}")
+                if port.manufacturer:
+                    print(f"    Manufacturer: {port.manufacturer}")
                 if port.serial_number:
                     print(f"    Serial Number: {port.serial_number}")
                 if port.vid and port.pid:
@@ -341,7 +497,7 @@ class SerialTester:
             return ports
             
         except Exception as e:
-            print(f"✗ Error listing ports: {e}")
+            print(f"Error listing ports: {e}")
             return []
     
     @staticmethod
@@ -358,7 +514,8 @@ class SerialTester:
         print(f"{'='*60}")
         
         if not SERIAL_AVAILABLE:
-            print("✗ pyserial not available")
+            print("ERROR: pyserial not available")
+            print("Install with: pip install pyserial")
             return
         
         try:
@@ -373,8 +530,8 @@ class SerialTester:
                 timeout=1.0,
             )
             
-            print(f"✓ Port opened successfully")
-            print(f"  Reading data for {duration} seconds...")
+            print(f"Port opened successfully")
+            print(f"Reading data for {duration} seconds...")
             
             bytes_read = 0
             chunks_read = 0
@@ -387,7 +544,7 @@ class SerialTester:
                     if data:
                         bytes_read += len(data)
                         chunks_read += 1
-                        print(f"  ← Read {len(data)} bytes: {data.hex()}")
+                        print(f"  <- Read {len(data)} bytes: {data.hex()}")
                         # Try to decode as text
                         try:
                             text = data.decode('utf-8', errors='ignore')
@@ -400,18 +557,25 @@ class SerialTester:
             
             ser.close()
             
-            print(f"\n✓ Serial reading test complete")
+            print(f"\nSerial reading test complete")
             print(f"  Total bytes read: {bytes_read}")
             print(f"  Data chunks: {chunks_read}")
             
             if bytes_read == 0:
-                print(f"\n⚠ Warning: No data received. Check if device is sending data.")
+                print(f"\nWARNING: No data received")
+                print(f"Possible reasons:")
+                print(f"  - Device not sending data")
+                print(f"  - Wrong baud rate (try 115200 or other values)")
+                print(f"  - Device requires initialization command")
             
         except serial.SerialException as e:
-            print(f"✗ Serial error: {e}")
-            print(f"  Make sure the port is not already in use")
+            print(f"Serial error: {e}")
+            print(f"\nPossible issues:")
+            print(f"  - Port already in use by another program")
+            print(f"  - Insufficient permissions (try running as admin)")
+            print(f"  - Device disconnected")
         except Exception as e:
-            print(f"✗ Error during serial test: {e}")
+            print(f"Error during serial test: {e}")
 
 
 async def main():
@@ -441,12 +605,13 @@ async def main():
     tester = WebSocketTester(ENDPOINT, HUB_ID, DEVICE_TOKEN)
     
     try:
-        # Test 1: Connect
-        connected = await tester.connect()
+        # Test 1: Connect with retry logic
+        connected = await tester.connect(max_retries=3, timeout=5.0)
         
         if not connected:
-            print("\n✗ Cannot proceed with tests - connection failed")
-            return
+            print(f"\nCannot proceed with envelope tests - connection failed")
+            tester.print_test_summary()
+            return 1
         
         # Wait a bit for connection to stabilize
         await asyncio.sleep(1)
@@ -472,41 +637,35 @@ async def main():
             # Test first available port
             first_port = available_ports[0].device
             
-            print(f"\n⚠ About to test serial reading on {first_port}")
-            print(f"  Make sure this port is NOT in use by another program!")
-            response = input(f"  Continue with serial test? (y/n): ")
+            print(f"\nSerial test available for: {first_port}")
+            print(f"WARNING: This will test serial reading on the port")
+            print(f"Make sure the port is NOT in use by another program")
+            response = input(f"Continue with serial test? (y/n): ")
             
             if response.lower() == 'y':
                 await serial_tester.test_serial_reading(first_port, duration=5)
             else:
-                print(f"  Skipping serial reading test")
+                print(f"Skipped serial reading test")
         
-        # Summary
-        print(f"\n{'='*60}")
-        print(f"TEST SUMMARY")
-        print(f"{'='*60}")
-        print(f"✓ WebSocket connection: {'SUCCESS' if connected else 'FAILED'}")
-        print(f"✓ Telemetry envelope: SENT")
-        print(f"✓ Health envelope: SENT")
-        print(f"✓ Device event envelope: SENT")
-        print(f"✓ Task status envelope: SENT")
-        print(f"  Received messages from server: {len(tester.received_messages)}")
+        # Print results summary
+        tester.print_test_summary()
         
-        if tester.received_messages:
-            print(f"\n  Server responses:")
-            for msg in tester.received_messages:
-                print(f"    - {msg.get('type', 'unknown')}: {msg}")
+        # Keep connection alive briefly to observe behavior
+        print(f"\nKeeping connection alive for 3 seconds...")
+        await asyncio.sleep(3)
         
-        # Keep connection alive to observe behavior
-        print(f"\nKeeping connection alive for 5 seconds to observe behavior...")
-        await asyncio.sleep(5)
+        # Return 0 if all tests passed, 1 if any failed
+        all_passed = all(success for _, success, _ in tester.test_results)
+        return 0 if all_passed else 1
         
     except KeyboardInterrupt:
-        print("\n\n⚠ Interrupted by user")
+        print("\n\nInterrupted by user")
+        return 130
     except Exception as e:
-        print(f"\n✗ Test error: {e}")
+        print(f"\nUnexpected error: {e}")
         import traceback
         traceback.print_exc()
+        return 1
     finally:
         # Cleanup
         await tester.disconnect()
@@ -517,7 +676,8 @@ async def main():
 
 if __name__ == "__main__":
     try:
-        asyncio.run(main())
+        exit_code = asyncio.run(main())
+        sys.exit(exit_code)
     except KeyboardInterrupt:
         print("\n\nTest interrupted by user")
-        sys.exit(0)
+        sys.exit(130)
