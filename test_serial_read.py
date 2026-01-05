@@ -84,17 +84,16 @@ def auto_detect_baud_rate(port_path):
             # Wait briefly for connection to stabilize
             time.sleep(0.05)
             
+            # Clear any existing data in buffer first
+            ser.reset_input_buffer()
+            
             # Reset Arduino by toggling DTR (required for auto-start on RPi)
             ser.dtr = False
             time.sleep(0.1)
             ser.dtr = True
-            time.sleep(0.3)  # Wait for Arduino to reset and start transmitting
             
-            # Clear any existing data in buffer
-            ser.reset_input_buffer()
-            
-            # Wait a moment for any auto-transmitted data
-            time.sleep(0.1)
+            # Wait for Arduino to reset and start transmitting
+            time.sleep(0.5)
             
             # Check if there's data available (indicates active device)
             has_data = ser.in_waiting > 0
