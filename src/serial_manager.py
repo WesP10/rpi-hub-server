@@ -39,6 +39,8 @@ class Connection:
     last_activity_at: datetime = field(default_factory=datetime.now)
     status: ConnectionStatus = ConnectionStatus.DISCONNECTED
     error_count: int = 0
+    bytes_read: int = 0
+    bytes_written: int = 0
 
     def get_device_path(self) -> str:
         """Get device path."""
@@ -381,6 +383,7 @@ class SerialManager:
 
                 if data:
                     connection.update_activity()
+                    connection.bytes_read += len(data)
                     data_hex = data.hex()
 
                     self.logger.serial_read(
@@ -464,6 +467,7 @@ class SerialManager:
             )
 
             connection.update_activity()
+            connection.bytes_written += bytes_written
             self.logger.serial_write(port_id, bytes_written)
 
             return True
@@ -528,6 +532,7 @@ class SerialManager:
 
             if data:
                 connection.update_activity()
+                connection.bytes_read += len(data)
                 self.logger.serial_read(port_id, len(data), data.hex())
 
             return data
