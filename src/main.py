@@ -128,9 +128,9 @@ async def lifespan(app: FastAPI):
             """Callback for serial data - forwards to Hub Agent."""
             try:
                 logger.debug(
-                    "serial_data_received",
                     f"Serial data callback invoked for {port_id}",
                     extra={
+                        "event": "serial_data_received",
                         "port_id": port_id,
                         "session_id": session_id,
                         "data_size": len(data),
@@ -141,17 +141,15 @@ async def lifespan(app: FastAPI):
                 
                 if hub_agent is None:
                     logger.error(
-                        "hub_agent_not_initialized",
                         "Hub agent is None in serial data callback",
-                        extra={"port_id": port_id}
+                        extra={"event": "hub_agent_not_initialized", "port_id": port_id}
                     )
                     return
                     
                 if not hub_agent.is_connected:
                     logger.warning(
-                        "hub_agent_not_connected",
                         "Hub agent not connected, skipping telemetry",
-                        extra={"port_id": port_id, "data_size": len(data)}
+                        extra={"event": "hub_agent_not_connected", "port_id": port_id, "data_size": len(data)}
                     )
                     return
                 
@@ -165,16 +163,15 @@ async def lifespan(app: FastAPI):
                 )
                 
                 logger.debug(
-                    "telemetry_queued",
                     f"Telemetry queued for {port_id}",
-                    extra={"port_id": port_id, "data_size": len(data)}
+                    extra={"event": "telemetry_queued", "port_id": port_id, "data_size": len(data)}
                 )
                 
             except Exception as e:
                 logger.error(
-                    "serial_callback_error",
                     f"Error in serial data callback: {e}",
                     extra={
+                        "event": "serial_callback_error",
                         "port_id": port_id,
                         "error": str(e),
                         "error_type": type(e).__name__,
@@ -197,9 +194,9 @@ async def lifespan(app: FastAPI):
                     baud_rate = device_info.detected_baud or settings.serial.default_baud_rate
                     
                     logger.info(
-                        "auto_connect_triggered",
                         f"Auto-connecting to {device_info.port_id}",
                         extra={
+                            "event": "auto_connect_triggered",
                             "port_id": device_info.port_id,
                             "device_path": device_info.device_path,
                             "baud_rate": baud_rate,
@@ -218,9 +215,9 @@ async def lifespan(app: FastAPI):
                     
                     if success:
                         logger.info(
-                            "auto_connect_success",
                             f"Auto-connected to {device_info.port_id}",
                             extra={
+                                "event": "auto_connect_success",
                                 "port_id": device_info.port_id,
                                 "session_id": session_id,
                                 "baud_rate": baud_rate,
@@ -245,16 +242,15 @@ async def lifespan(app: FastAPI):
                             )
                     else:
                         logger.warning(
-                            "auto_connect_failed",
                             f"Failed to auto-connect to {device_info.port_id}",
-                            extra={"port_id": device_info.port_id}
+                            extra={"event": "auto_connect_failed", "port_id": device_info.port_id}
                         )
                         
                 except Exception as e:
                     logger.error(
-                        "auto_connect_error",
                         f"Error auto-connecting to {device_info.port_id}: {e}",
                         extra={
+                            "event": "auto_connect_error",
                             "port_id": device_info.port_id,
                             "error": str(e),
                         },
@@ -265,9 +261,8 @@ async def lifespan(app: FastAPI):
                 """Automatically disconnect removed devices."""
                 try:
                     logger.info(
-                        "auto_disconnect_triggered",
                         f"Device removed: {device_info.port_id}",
-                        extra={"port_id": device_info.port_id}
+                        extra={"event": "auto_disconnect_triggered", "port_id": device_info.port_id}
                     )
                     
                     # Close the connection
@@ -287,9 +282,9 @@ async def lifespan(app: FastAPI):
                         
                 except Exception as e:
                     logger.error(
-                        "auto_disconnect_error",
                         f"Error auto-disconnecting {device_info.port_id}: {e}",
                         extra={
+                            "event": "auto_disconnect_error",
                             "port_id": device_info.port_id,
                             "error": str(e),
                         },
@@ -300,8 +295,8 @@ async def lifespan(app: FastAPI):
             usb_mapper.on_device_disconnected(auto_disconnect_device)
             
             logger.info(
-                "auto_connect_enabled",
-                "Auto-connection enabled for detected devices"
+                "Auto-connection enabled for detected devices",
+                extra={"event": "auto_connect_enabled"}
             )
         
         # Start USB port mapper scanning
