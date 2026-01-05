@@ -309,13 +309,32 @@ class USBPortMapper:
                         has_data = ser.in_waiting > 0
                         
                         if has_data:
-                            # Read a sample to verify it's not all nulls
+                            # Read a sample to validate the baud rate
                             sample = ser.read(min(ser.in_waiting, 64))
+                            
+                            # Check if data is valid (not all nulls and contains printable ASCII)
                             non_null_bytes = sum(1 for b in sample if b != 0)
+                            
+                            # Count printable ASCII characters (0x20-0x7E) and common control chars
+                            # Include \r (0x0D), \n (0x0A), and \t (0x09) as valid
+                            printable_bytes = sum(1 for b in sample if 
+                                                 (0x20 <= b <= 0x7E) or b in (0x0D, 0x0A, 0x09))
+                            
+                            # Calculate percentage of valid characters
+                            if len(sample) > 0:
+                                valid_percentage = printable_bytes / len(sample)
+                            else:
+                                valid_percentage = 0
+                            
                             ser.close()
                             # Small delay to let device settle after closing
                             time.sleep(0.3)
-                            return (True, non_null_bytes > 0)
+                            
+                            # Consider baud rate valid if:
+                            # 1. Has non-null bytes
+                            # 2. At least 80% of bytes are printable (indicates correct baud rate)
+                            is_valid = non_null_bytes > 0 and valid_percentage >= 0.8
+                            return (True, is_valid)
                         
                         ser.close()
                         # Small delay to let device settle after closing
