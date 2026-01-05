@@ -81,11 +81,11 @@ class FlashTask(BaseTask):
         usb_mapper = get_usb_port_mapper()
         
         # Get port path from USB mapper
-        device = usb_mapper.get_device_by_id(self.port_id)
-        if not device:
+        device_info = await usb_mapper.get_device_info(self.port_id)
+        if not device_info:
             raise ValueError(f"Port ID not found: {self.port_id}")
         
-        port_path = device["port"]
+        port_path = device_info.device_path
         
         logger.info(
             f"Starting firmware flash",
