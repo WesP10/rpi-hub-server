@@ -17,9 +17,7 @@ from src.logging_config import StructuredLogger
 # Baud rate candidates to try (Arduino/ESP32 defaults first, then comprehensive list)
 BAUD_RATE_CANDIDATES = [
     # Arduino defaults
-    4800,
-    9600,     # Most common Arduino (Uno, Nano)
-    19200,
+    9600,
     115200,
 ]
 
@@ -245,6 +243,26 @@ class USBPortMapper:
 
         return removed_port_ids
 
+    def _has_detected_baud(self, device_path: str) -> Optional[int]:
+        """Check if device already has a detected baud rate in memory.
+        
+        This is an in-memory cache only (not file-based) to avoid re-detecting
+        baud rates during periodic scans of already-connected devices.
+        
+        Args:
+            device_path: Device path to check
+            
+        Returns:
+            Detected baud rate if found, None otherwise
+        """
+        # Check if this device path is already tracked
+        port_id = self.device_path_to_port_id.get(device_path)
+        if port_id:
+            device_info = self.port_id_to_device_info.get(port_id)
+            if device_info and device_info.detected_baud is not None:
+                return device_info.detected_baud
+        return None
+
     def _score_serial_data(self, data: bytes) -> int:
         """Score serial data based on ASCII-like content.
         
@@ -378,8 +396,20 @@ class USBPortMapper:
             vendor_id = f"{port.vid:04x}" if port.vid else None
             product_id = f"{port.pid:04x}" if port.pid else None
             
-            # Always detect baud rate fresh (no caching)
-            detected_baud = await self._detect_baud_rate_manual(port.device)
+            # Check if we already have a detected baud for this device (in-memory)
+            detected_baud = self._has_detected_baud(port.device)
+            
+            if detected_baud is not None:
+                # Device already known in this session - skip detection
+                self.logger.debug(
+                    "baud_skipped_known_device",
+                    f"Skipping baud detection for known device {port.device} (using {detected_baud})",
+                    device_path=port.device,
+                    baud_rate=detected_baud,
+                )
+            else:
+                # New device - detect baud rate
+                detected_baud = await self._detect_baud_rate_manual(port.device)
             
             device_info = DeviceInfo(
                 port_id="",  # Will be set later
