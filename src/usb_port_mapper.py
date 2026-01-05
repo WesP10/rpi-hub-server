@@ -330,8 +330,20 @@ class USBPortMapper:
                     parity=serial.PARITY_NONE,
                     stopbits=serial.STOPBITS_ONE,
                 )
-                time.sleep(0.2)  # Let data accumulate
-                data = ser.read(200)  # Read up to 200 bytes
+                
+                # Clear any existing data in buffer
+                ser.reset_input_buffer()
+                
+                # Reset Arduino by toggling DTR (triggers reset on most Arduino boards)
+                ser.dtr = False
+                time.sleep(0.1)
+                ser.dtr = True
+                
+                # Wait for device to reset and start transmitting
+                time.sleep(2.0)
+                
+                # Read up to 200 bytes
+                data = ser.read(200)
                 ser.close()
                 score = self._score_serial_data(data)
                 return (baud, score)
