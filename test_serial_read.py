@@ -78,6 +78,14 @@ def test_serial_read(port_path, baud_rate=115200, duration=10):
         )
         
         print(f"✓ Opened {port_path} successfully")
+        
+        # Reset Arduino by toggling DTR (required for auto-start on RPi)
+        print("Resetting Arduino...")
+        ser.dtr = False
+        time.sleep(0.1)  # Brief delay
+        ser.dtr = True
+        time.sleep(2)  # Wait for Arduino to reset and start sketch
+        
         print(f"Waiting for data...\n")
         
         start_time = time.time()
