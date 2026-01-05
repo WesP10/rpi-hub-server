@@ -104,16 +104,82 @@ async def lifespan(app: FastAPI):
             default_timeout=settings.serial.default_timeout
         )
         
+        # Initialize Buffer Manager (before hub_agent)
+        logger.info("Initializing Buffer Manager")
+        buffer_manager = initialize_buffer_manager(
+            size_mb=settings.buffer.size_mb,
+            warn_threshold=settings.buffer.warn_threshold
+        )
+        
+        # Initialize Hub Agent (before setting callbacks)
+        logger.info("Initializing Hub Agent")
+        hub_agent = HubAgent(
+            hub_id=settings.hub.hub_id,
+            server_endpoint=settings.hub.server_endpoint,
+            device_token=settings.hub.device_token,
+            buffer_manager=buffer_manager,
+            reconnect_interval=settings.hub.reconnect_interval,
+            max_reconnect_attempts=settings.hub.max_reconnect_attempts
+        )
+        
         # Set data callback for forwarding serial data to Hub Agent
+        # Note: This must be defined AFTER hub_agent is created
         def serial_data_callback(port_id: str, session_id: str, data: bytes):
             """Callback for serial data - forwards to Hub Agent."""
-            if hub_agent and hub_agent.is_connected:
+            try:
+                logger.debug(
+                    "serial_data_received",
+                    f"Serial data callback invoked for {port_id}",
+                    extra={
+                        "port_id": port_id,
+                        "session_id": session_id,
+                        "data_size": len(data),
+                        "hub_agent_exists": hub_agent is not None,
+                        "hub_agent_connected": hub_agent.is_connected if hub_agent else False,
+                    }
+                )
+                
+                if hub_agent is None:
+                    logger.error(
+                        "hub_agent_not_initialized",
+                        "Hub agent is None in serial data callback",
+                        extra={"port_id": port_id}
+                    )
+                    return
+                    
+                if not hub_agent.is_connected:
+                    logger.warning(
+                        "hub_agent_not_connected",
+                        "Hub agent not connected, skipping telemetry",
+                        extra={"port_id": port_id, "data_size": len(data)}
+                    )
+                    return
+                
+                # Create task to send telemetry
                 asyncio.create_task(
                     hub_agent.send_telemetry(
                         port_id=port_id,
                         session_id=session_id,
                         data=data
                     )
+                )
+                
+                logger.debug(
+                    "telemetry_queued",
+                    f"Telemetry queued for {port_id}",
+                    extra={"port_id": port_id, "data_size": len(data)}
+                )
+                
+            except Exception as e:
+                logger.error(
+                    "serial_callback_error",
+                    f"Error in serial data callback: {e}",
+                    extra={
+                        "port_id": port_id,
+                        "error": str(e),
+                        "error_type": type(e).__name__,
+                    },
+                    exc_info=True
                 )
         
         serial_manager.set_data_callback(serial_data_callback)
@@ -240,24 +306,6 @@ async def lifespan(app: FastAPI):
         
         # Start USB port mapper scanning
         await usb_mapper.start(scan_interval=settings.serial.scan_interval)
-        
-        # Initialize Buffer Manager
-        logger.info("Initializing Buffer Manager")
-        buffer_manager = initialize_buffer_manager(
-            size_mb=settings.buffer.size_mb,
-            warn_threshold=settings.buffer.warn_threshold
-        )
-        
-        # Initialize Hub Agent
-        logger.info("Initializing Hub Agent")
-        hub_agent = HubAgent(
-            hub_id=settings.hub.hub_id,
-            server_endpoint=settings.hub.server_endpoint,
-            device_token=settings.hub.device_token,
-            buffer_manager=buffer_manager,
-            reconnect_interval=settings.hub.reconnect_interval,
-            max_reconnect_attempts=settings.hub.max_reconnect_attempts
-        )
         
         # Initialize Command Handler with task status callback
         logger.info("Initializing Command Handler")
