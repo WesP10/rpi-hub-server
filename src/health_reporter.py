@@ -217,12 +217,12 @@ class HealthReporter:
                     "ports": [
                         {
                             "port_id": conn.port_id,
-                            "status": conn.status,
+                            "status": conn.status.value if hasattr(conn.status, 'value') else str(conn.status),
                             "baud_rate": conn.baud_rate,
-                            "bytes_read": conn.bytes_read,
-                            "bytes_written": conn.bytes_written,
+                            "bytes_read": getattr(conn, 'bytes_read', 0),
+                            "bytes_written": getattr(conn, 'bytes_written', 0),
                         }
-                        for conn in active_connections
+                        for conn in active_connections.values()
                     ],
                 }
             except RuntimeError:

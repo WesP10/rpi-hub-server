@@ -127,7 +127,7 @@ async def lifespan(app: FastAPI):
         def serial_data_callback(port_id: str, session_id: str, data: bytes):
             """Callback for serial data - forwards to Hub Agent."""
             try:
-                logger.debug(
+                logger.info(
                     f"Serial data callback invoked for {port_id}",
                     extra={
                         "event": "serial_data_received",
@@ -162,7 +162,7 @@ async def lifespan(app: FastAPI):
                     )
                 )
                 
-                logger.debug(
+                logger.info(
                     f"Telemetry queued for {port_id}",
                     extra={"event": "telemetry_queued", "port_id": port_id, "data_size": len(data)}
                 )
