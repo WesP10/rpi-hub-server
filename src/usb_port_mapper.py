@@ -370,6 +370,18 @@ class USBPortMapper:
         ports = await loop.run_in_executor(None, serial.tools.list_ports.comports)
 
         for port in ports:
+            # Skip built-in serial ports (not USB devices)
+            # Built-in ports typically have no vendor ID and match certain patterns
+            if port.vid is None:
+                # Check if it's a built-in hardware serial port
+                device_lower = port.device.lower()
+                if any(pattern in device_lower for pattern in ['/dev/ttys', '/dev/ttyama', 'com1', 'com2']):
+                    self.logger.debug(
+                        "skipping_builtin_port",
+                        f"Skipping built-in serial port {port.device}",
+                        device_path=port.device,
+                    )
+                    continue
             # Format vendor and product IDs
             vendor_id = f"{port.vid:04x}" if port.vid else None
             product_id = f"{port.pid:04x}" if port.pid else None
