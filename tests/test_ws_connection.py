@@ -285,7 +285,7 @@ class WebSocketTester:
             envelope = {
                 "type": "health",
                 "hubId": self.hub_id,
-                "timestamp": datetime.utcnow().isoformat(),
+                "timestamp": datetime.now().isoformat(),
                 "uptime_seconds": 3600,
                 "system": {
                     "cpu": {
@@ -635,16 +635,31 @@ async def main():
         available_ports = serial_tester.list_available_ports()
         
         if available_ports and SERIAL_AVAILABLE:
-            # Test first available port
-            first_port = available_ports[0].device
+            # Prefer non-default ports (skip ttyS0, COM1, etc.)
+            # Look for USB serial devices like ttyUSB*, ttyACM*, COM3+
+            default_ports = ['/dev/ttyS0', '/dev/ttyAMA0', 'COM1', 'COM2']
             
-            print(f"\nSerial test available for: {first_port}")
+            # Find first non-default port
+            selected_port = None
+            for port in available_ports:
+                if port.device not in default_ports:
+                    selected_port = port.device
+                    break
+            
+            # Fall back to first port if all are default
+            if not selected_port:
+                selected_port = available_ports[0].device
+                print(f"\nNote: Only default port available, using: {selected_port}")
+            else:
+                print(f"\nNote: Selected non-default port: {selected_port}")
+            
+            print(f"\nSerial test available for: {selected_port}")
             print(f"WARNING: This will test serial reading on the port")
             print(f"Make sure the port is NOT in use by another program")
             response = input(f"Continue with serial test? (y/n): ")
             
             if response.lower() == 'y':
-                await serial_tester.test_serial_reading(first_port, duration=5)
+                await serial_tester.test_serial_reading(selected_port, duration=5)
             else:
                 print(f"Skipped serial reading test")
         
