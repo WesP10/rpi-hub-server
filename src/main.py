@@ -318,7 +318,22 @@ async def lifespan(app: FastAPI):
         async def handle_command(command_envelope):
             """Handle incoming commands from server."""
             try:
-                await command_handler.handle_command(command_envelope)
+                # Extract the actual command from the envelope
+                # The envelope has structure: {"type": "command", "command": {...}}
+                command = command_envelope.get("command")
+                if not command:
+                    logger.error(
+                        "Command envelope missing 'command' field",
+                        extra={"envelope": command_envelope}
+                    )
+                    return
+                
+                logger.info(
+                    f"Received command: {command.get('commandType')} (ID: {command.get('commandId')})",
+                    extra={"command": command}
+                )
+                
+                await command_handler.handle_command(command)
             except Exception as e:
                 logger.error(
                     f"Failed to handle command: {e}",
