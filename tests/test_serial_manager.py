@@ -358,8 +358,8 @@ async def test_data_callback(serial_manager, mock_serial):
     """Test data callback invocation."""
     callback_data = []
 
-    async def data_callback(port_id, data):
-        callback_data.append((port_id, data))
+    async def data_callback(port_id, session_id, data):
+        callback_data.append((port_id, session_id, data))
 
     serial_manager.set_data_callback(data_callback)
 

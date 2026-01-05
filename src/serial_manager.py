@@ -150,7 +150,7 @@ class SerialManager:
         """Set callback for received serial data.
 
         Args:
-            callback: Async function(port_id: str, data: bytes)
+            callback: Async function(port_id: str, session_id: str, data: bytes)
         """
         self._data_callback = callback
 
@@ -393,9 +393,9 @@ class SerialManager:
                     if self._data_callback:
                         try:
                             if asyncio.iscoroutinefunction(self._data_callback):
-                                await self._data_callback(port_id, data)
+                                await self._data_callback(port_id, connection.session_id, data)
                             else:
-                                self._data_callback(port_id, data)
+                                self._data_callback(port_id, connection.session_id, data)
                         except Exception as e:
                             self.logger.error(
                                 "data_callback_error",
