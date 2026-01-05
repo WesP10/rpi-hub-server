@@ -296,6 +296,12 @@ class USBPortMapper:
                         import time
                         time.sleep(0.05)
                         
+                        # Reset Arduino by toggling DTR (required for auto-start on RPi)
+                        ser.dtr = False
+                        time.sleep(0.1)
+                        ser.dtr = True
+                        time.sleep(0.3)  # Wait for Arduino to reset and start transmitting
+                        
                         # Clear any existing data in buffer
                         ser.reset_input_buffer()
                         
