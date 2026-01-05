@@ -48,6 +48,84 @@ def bytes_to_printable(data):
     return ''.join(chr(b) if 32 <= b < 127 else '.' for b in data)
 
 
+def auto_detect_baud_rate(port_path):
+    """
+    Auto-detect baud rate by trying common rates with DTR reset.
+    
+    Args:
+        port_path: Serial port path
+        
+    Returns:
+        Detected baud rate or None
+    """
+    common_baud_rates = [9600, 115200, 57600, 38400, 19200, 4800, 2400, 1200]
+    
+    print("\n" + "="*60)
+    print("Auto-detecting Baud Rate")
+    print("="*60)
+    print(f"Port: {port_path}")
+    print(f"Testing rates: {common_baud_rates}")
+    print("="*60 + "\n")
+    
+    for baud_rate in common_baud_rates:
+        try:
+            print(f"Trying {baud_rate} baud...", end='', flush=True)
+            
+            ser = serial.Serial(
+                port=port_path,
+                baudrate=baud_rate,
+                bytesize=8,
+                stopbits=1,
+                parity='N',
+                timeout=0.1,
+                write_timeout=0.1,
+            )
+            
+            # Wait briefly for connection to stabilize
+            time.sleep(0.05)
+            
+            # Reset Arduino by toggling DTR (required for auto-start on RPi)
+            ser.dtr = False
+            time.sleep(0.1)
+            ser.dtr = True
+            time.sleep(0.3)  # Wait for Arduino to reset and start transmitting
+            
+            # Clear any existing data in buffer
+            ser.reset_input_buffer()
+            
+            # Wait a moment for any auto-transmitted data
+            time.sleep(0.1)
+            
+            # Check if there's data available (indicates active device)
+            has_data = ser.in_waiting > 0
+            
+            if has_data:
+                # Read a sample to verify it's not all nulls
+                sample = ser.read(min(ser.in_waiting, 64))
+                non_null_bytes = sum(1 for b in sample if b != 0)
+                
+                ser.close()
+                
+                if non_null_bytes > 0:
+                    print(f" ✓ DETECTED! (found {len(sample)} bytes, {non_null_bytes} non-null)")
+                    print(f"   Sample HEX: {sample[:32].hex()}")
+                    print(f"   Sample ASCII: {bytes_to_printable(sample[:32])}")
+                    return baud_rate
+                else:
+                    print(f" ✗ Data present but all null bytes")
+            else:
+                ser.close()
+                print(f" ✗ No data")
+                
+        except serial.SerialException as e:
+            print(f" ✗ Error: {e}")
+        except Exception as e:
+            print(f" ✗ Unexpected error: {e}")
+    
+    print("\n⚠️  Could not auto-detect baud rate")
+    return None
+
+
 def test_serial_read(port_path, baud_rate=115200, duration=10):
     """
     Read from serial port and display data in multiple formats.
@@ -167,33 +245,46 @@ def main():
         return
     
     # Get baud rate
-    print("\nCommon baud rates:")
+    print("\nBaud rate options:")
     print("  1. 9600")
-    print("  2. 115200 (default)")
+    print("  2. 115200")
     print("  3. 57600")
     print("  4. 38400")
-    print("  5. Custom")
-    print("\nSelect baud rate (or press Enter for 115200): ", end='')
+    print("  5. Auto-detect (recommended)")
+    print("  6. Custom")
+    print("\nSelect baud rate (or press Enter for auto-detect): ", end='')
     
+    baud_rate = None
     try:
         baud_choice = input().strip()
-        if not baud_choice or baud_choice == "2":
-            baud_rate = 115200
+        if not baud_choice or baud_choice == "5":
+            baud_rate = auto_detect_baud_rate(selected_port)
+            if not baud_rate:
+                print("Auto-detect failed. Enter baud rate manually: ", end='')
+                baud_rate = int(input().strip())
         elif baud_choice == "1":
             baud_rate = 9600
+        elif baud_choice == "2":
+            baud_rate = 115200
         elif baud_choice == "3":
             baud_rate = 57600
         elif baud_choice == "4":
             baud_rate = 38400
-        elif baud_choice == "5":
+        elif baud_choice == "6":
             print("Enter custom baud rate: ", end='')
             baud_rate = int(input().strip())
         else:
-            print("Invalid choice, using 115200")
-            baud_rate = 115200
+            print("Invalid choice, using auto-detect")
+            baud_rate = auto_detect_baud_rate(selected_port)
+            if not baud_rate:
+                print("Auto-detect failed, using 115200")
+                baud_rate = 115200
     except (ValueError, KeyboardInterrupt):
-        print("\nUsing default: 115200")
-        baud_rate = 115200
+        print("\nUsing auto-detect")
+        baud_rate = auto_detect_baud_rate(selected_port)
+        if not baud_rate:
+            print("Auto-detect failed, using 115200")
+            baud_rate = 115200
     
     # Get duration
     print("\nHow long to read (seconds, default 10): ", end='')
