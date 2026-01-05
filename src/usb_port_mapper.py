@@ -313,9 +313,13 @@ class USBPortMapper:
                             sample = ser.read(min(ser.in_waiting, 64))
                             non_null_bytes = sum(1 for b in sample if b != 0)
                             ser.close()
+                            # Small delay to let device settle after closing
+                            time.sleep(0.3)
                             return (True, non_null_bytes > 0)
                         
                         ser.close()
+                        # Small delay to let device settle after closing
+                        time.sleep(0.3)
                         return (True, False)
                     except (serial.SerialException, OSError):
                         return (False, False)

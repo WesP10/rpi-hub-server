@@ -235,6 +235,9 @@ class SerialManager:
                     timeout=connection.timeout,
                 )
 
+                # Clear any stale data from buffer first
+                ser.reset_input_buffer()
+
                 # Reset Arduino by toggling DTR (required for auto-start on RPi)
                 # This mimics Windows behavior and resets the Arduino
                 ser.dtr = False
