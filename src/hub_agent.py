@@ -166,6 +166,15 @@ class HubAgent:
             self._receiver_task = asyncio.create_task(self._receive_loop())
 
             self.logger.info(
+                "Sender and receiver tasks created",
+                extra={
+                    "event": "tasks_created",
+                    "sender_task_done": self._sender_task.done(),
+                    "receiver_task_done": self._receiver_task.done(),
+                }
+            )
+
+            self.logger.info(
                 "ws_connected",
                 "Connected to server",
                 endpoint=self.server_endpoint,
@@ -256,7 +265,14 @@ class HubAgent:
 
     async def _send_loop(self) -> None:
         """Send buffered messages to server."""
-        self.logger.debug("sender_started", "Message sender started")
+        self.logger.info(
+            "Message sender started",
+            extra={
+                "event": "sender_started",
+                "is_connected": self.is_connected,
+                "is_running": self._running,
+            }
+        )
 
         while self._running and self.is_connected:
             try:
@@ -319,11 +335,21 @@ class HubAgent:
                 )
                 await asyncio.sleep(1)
 
-        self.logger.debug("sender_stopped", "Message sender stopped")
+        self.logger.info(
+            "Message sender stopped",
+            extra={
+                "event": "sender_stopped",
+                "is_connected": self.is_connected,
+                "is_running": self._running,
+            }
+        )
 
     async def _receive_loop(self) -> None:
         """Receive messages from server."""
-        self.logger.debug("receiver_started", "Message receiver started")
+        self.logger.info(
+            "Message receiver started",
+            extra={"event": "receiver_started"}
+        )
 
         while self._running and self.is_connected:
             try:
@@ -372,7 +398,10 @@ class HubAgent:
                 )
                 await asyncio.sleep(1)
 
-        self.logger.debug("receiver_stopped", "Message receiver stopped")
+        self.logger.info(
+            "Message receiver stopped",
+            extra={"event": "receiver_stopped"}
+        )
 
     async def _process_incoming_message(self, data: Dict[str, Any]) -> None:
         """Process incoming message from server.
