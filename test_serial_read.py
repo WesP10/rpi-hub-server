@@ -48,9 +48,27 @@ def bytes_to_printable(data):
     return ''.join(chr(b) if 32 <= b < 127 else '.' for b in data)
 
 
+def score_serial_data(data):
+    """Score serial data based on ASCII-like content.
+    
+    Args:
+        data: Raw bytes received from serial port
+        
+    Returns:
+        Score (higher is better) - count of ASCII printable + control chars
+    """
+    if not data:
+        return 0
+    # Count printable ASCII characters and common control chars (tab, newline, carriage return)
+    return sum(32 <= b <= 126 or b in (9, 10, 13) for b in data)
+
+
 def auto_detect_baud_rate(port_path):
     """
-    Auto-detect baud rate by trying common rates with DTR reset.
+    Auto-detect baud rate using manual scoring approach (same as usb_port_mapper.py).
+    
+    Tests each baud rate candidate and scores the received data based on ASCII-like content.
+    Returns the baud rate with the highest score.
     
     Args:
         port_path: Serial port path
@@ -58,71 +76,86 @@ def auto_detect_baud_rate(port_path):
     Returns:
         Detected baud rate or None
     """
-    common_baud_rates = [9600, 115200, 57600, 38400, 19200, 4800, 2400, 1200]
+    # Baud rate candidates (Arduino/ESP32 defaults first, then comprehensive list)
+    # Must match usb_port_mapper.py for consistency
+    baud_candidates = [
+        4800,
+        9600,     # Most common Arduino (Uno, Nano)
+        19200,
+        115200,   # Modern Arduino (Mega, Due, ESP32)
+    ]
     
     print("\n" + "="*60)
-    print("Auto-detecting Baud Rate")
+    print("Auto-detecting Baud Rate (Manual Scoring Method)")
     print("="*60)
     print(f"Port: {port_path}")
-    print(f"Testing rates: {common_baud_rates}")
+    print(f"Testing rates: {baud_candidates}")
+    print(f"Method: Score ASCII-printable content (32-126 + tab/newline/CR)")
     print("="*60 + "\n")
     
-    for baud_rate in common_baud_rates:
+    best_baud = None
+    best_score = -1
+    results = []
+    
+    for baud_rate in baud_candidates:
         try:
-            print(f"Trying {baud_rate} baud...", end='', flush=True)
+            print(f"Testing {baud_rate} baud...", end='', flush=True)
             
             ser = serial.Serial(
                 port=port_path,
                 baudrate=baud_rate,
-                bytesize=8,
-                stopbits=1,
-                parity='N',
-                timeout=1.0,
-                write_timeout=1.0,
+                bytesize=serial.EIGHTBITS,
+                parity=serial.PARITY_NONE,
+                stopbits=serial.STOPBITS_ONE,
+                timeout=0.2,
             )
             
-            # Clear any existing data in buffer first
-            ser.reset_input_buffer()
+            # Let data accumulate (same timing as usb_port_mapper.py)
+            time.sleep(0.2)
             
-            # Reset Arduino by toggling DTR (required for auto-start on RPi)
-            ser.dtr = False
-            time.sleep(0.1)
-            ser.dtr = True
+            # Read up to 200 bytes (same as usb_port_mapper.py)
+            data = ser.read(200)
+            ser.close()
             
-            # Wait for Arduino to reset and start transmitting (same as manual test)
-            time.sleep(2.0)
+            # Score the data
+            score = score_serial_data(data)
+            results.append((baud_rate, score, data))
             
-            # Check if there's data available (indicates active device)
-            has_data = ser.in_waiting > 0
+            print(f" score={score} ({len(data)} bytes)")
             
-            if has_data:
-                # Read a sample to verify it's not all nulls
-                sample = ser.read(min(ser.in_waiting, 64))
-                non_null_bytes = sum(1 for b in sample if b != 0)
-                
-                ser.close()
-                
-                if non_null_bytes > 0:
-                    print(f" ✓ DETECTED! (found {len(sample)} bytes, {non_null_bytes} non-null)")
-                    print(f"   Sample HEX: {sample[:32].hex()}")
-                    print(f"   Sample ASCII: {bytes_to_printable(sample[:32])}")
-                    return baud_rate
-                else:
-                    print(f" ✗ Data present but all null bytes")
-            else:
-                ser.close()
-                print(f" ✗ No data")
+            if len(data) > 0:
+                print(f"   Sample HEX: {data[:32].hex()}")
+                print(f"   Sample ASCII: {bytes_to_printable(data[:32])}")
+            
+            if score > best_score:
+                best_score = score
+                best_baud = baud_rate
             
             # Small delay between attempts to let port settle
             time.sleep(0.2)
                 
         except serial.SerialException as e:
             print(f" ✗ Error: {e}")
+            results.append((baud_rate, 0, b''))
         except Exception as e:
             print(f" ✗ Unexpected error: {e}")
+            results.append((baud_rate, 0, b''))
     
-    print("\n⚠️  Could not auto-detect baud rate")
-    return None
+    # Display results summary
+    print("\n" + "-"*60)
+    print("Results Summary:")
+    print("-"*60)
+    for baud, score, data in results:
+        marker = " ← BEST" if baud == best_baud else ""
+        print(f"  {baud:>6} baud: score={score:>4} ({len(data):>3} bytes){marker}")
+    print("-"*60)
+    
+    if best_baud and best_score > 0:
+        print(f"\n✓ DETECTED: {best_baud} baud (score: {best_score})")
+        return best_baud
+    else:
+        print("\n⚠️  Could not auto-detect baud rate (all scores were 0)")
+        return None
 
 
 def test_serial_read(port_path, baud_rate=115200, duration=10):
