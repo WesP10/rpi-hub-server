@@ -222,7 +222,7 @@ class HealthReporter:
                             "bytes_read": conn.bytes_read,
                             "bytes_written": conn.bytes_written,
                         }
-                        for conn in active_connections
+                        for conn in active_connections.values()
                     ],
                 }
             except RuntimeError:

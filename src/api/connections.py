@@ -132,7 +132,7 @@ async def list_connections():
         active_connections = serial_manager.get_active_connections()
         
         connections = []
-        for conn in active_connections:
+        for conn in active_connections.values():
             # Get device info for port path
             device = usb_mapper.get_device_by_id(conn.port_id)
             port_path = device["port"] if device else "unknown"
