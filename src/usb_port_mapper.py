@@ -375,7 +375,7 @@ class USBPortMapper:
             if port.vid is None:
                 # Check if it's a built-in hardware serial port
                 device_lower = port.device.lower()
-                if any(pattern in device_lower for pattern in ['/dev/ttys', '/dev/ttyama', '/dev/ttyACM0', 'com1', 'com2']):
+                if any(pattern in device_lower for pattern in ['/dev/ttys', '/dev/ttyama', 'com1', 'com2']):
                     self.logger.debug(
                         "skipping_builtin_port",
                         f"Skipping built-in serial port {port.device}",
