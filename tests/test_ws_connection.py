@@ -12,6 +12,7 @@ This script:
 import asyncio
 import base64
 import json
+import os
 import sys
 import time
 import socket
@@ -21,6 +22,12 @@ from urllib.parse import urlparse
 
 import websockets
 from websockets.exceptions import ConnectionClosed, WebSocketException
+
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    print("Warning: python-dotenv not available. Using defaults or environment variables only.")
 
 # For serial testing
 try:
@@ -584,25 +591,19 @@ async def main():
     print("RPI-HUB-SERVICE WebSocket & Serial Test Suite")
     print("="*60)
     
-    # Configuration - modify these as needed
-    ENDPOINT = "ws://localhost:8000/hub"
-    HUB_ID = "test-hub-01"
-    DEVICE_TOKEN = "test-token-123"
+    # Configuration - load from .env file or environment variables
+    SERVER_ENDPOINT = os.getenv("SERVER_ENDPOINT", "ws://localhost:8000/hub")
+    HUB_ID = os.getenv("HUB_ID", "test-hub-01")
+    DEVICE_TOKEN = os.getenv("DEVICE_TOKEN", "test-token-123")
     TEST_PORT_ID = "test-port-01"
     
-    # Read from environment if available
-    import os
-    ENDPOINT = os.getenv("SERVER_ENDPOINT", ENDPOINT)
-    HUB_ID = os.getenv("HUB_ID", HUB_ID)
-    DEVICE_TOKEN = os.getenv("DEVICE_TOKEN", DEVICE_TOKEN)
-    
     print(f"\nConfiguration:")
-    print(f"  Endpoint: {ENDPOINT}")
+    print(f"  Endpoint: {SERVER_ENDPOINT}")
     print(f"  Hub ID: {HUB_ID}")
     print(f"  Device Token: {'*' * len(DEVICE_TOKEN) if DEVICE_TOKEN else 'NOT SET'}")
     
     # Initialize tester
-    tester = WebSocketTester(ENDPOINT, HUB_ID, DEVICE_TOKEN)
+    tester = WebSocketTester(SERVER_ENDPOINT, HUB_ID, DEVICE_TOKEN)
     
     try:
         # Test 1: Connect with retry logic
