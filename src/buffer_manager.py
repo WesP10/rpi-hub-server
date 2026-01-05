@@ -99,6 +99,17 @@ class BufferManager:
         # Check threshold
         self._check_threshold()
 
+        self.logger.info(
+            f"Added {message_type} message to buffer",
+            extra={
+                "event": "message_buffered",
+                "message_type": message_type,
+                "size_bytes": message_size,
+                "buffer_length": len(self.buffer),
+                "buffer_utilization": self.current_size_bytes / self.size_bytes,
+            }
+        )
+
         return True
 
     def _drop_oldest(self) -> None:
@@ -159,6 +170,15 @@ class BufferManager:
 
         message = self.buffer.popleft()
         self.current_size_bytes -= message.size_bytes
+
+        self.logger.debug(
+            f"Popped {message.message_type} message from buffer",
+            extra={
+                "event": "message_popped",
+                "message_type": message.message_type,
+                "buffer_remaining": len(self.buffer),
+            }
+        )
 
         return message
 

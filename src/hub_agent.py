@@ -276,9 +276,23 @@ class HubAgent:
                     if self.ws_connection:
                         await self.ws_connection.send(json.dumps(envelope))
 
+                        self.logger.info(
+                            f"Sent {message.message_type} message",
+                            extra={
+                                "event": "message_sent",
+                                "message_type": message.message_type,
+                                "payload_bytes": message.size_bytes,
+                            }
+                        )
+                        
                         self.logger.ws_send(
                             message.message_type,
                             payload_bytes=message.size_bytes,
+                        )
+                    else:
+                        self.logger.warning(
+                            "WebSocket connection lost, cannot send message",
+                            extra={"event": "ws_connection_lost", "message_type": message.message_type}
                         )
                 else:
                     # No messages, wait a bit
