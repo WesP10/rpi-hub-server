@@ -244,52 +244,6 @@ class USBPortMapper:
 
         return removed_port_ids
 
-    def _is_device_known(self, vendor_id: Optional[str], product_id: Optional[str],
-                         serial_number: Optional[str], location: Optional[str]) -> bool:
-        """Check if device is already known (has cached baud rate).
-        
-        Args:
-            vendor_id: Vendor ID
-            product_id: Product ID
-            serial_number: Serial number
-            location: USB location
-            
-        Returns:
-            True if device is already known
-        """
-        for device_info in self.port_id_to_device_info.values():
-            # Match based on stable identifiers
-            if (device_info.vendor_id == vendor_id and 
-                device_info.product_id == product_id and
-                device_info.serial_number == serial_number and
-                device_info.location == location and
-                device_info.detected_baud is not None):
-                return True
-        return False
-
-    def _get_cached_baud_rate(self, vendor_id: Optional[str], product_id: Optional[str],
-                               serial_number: Optional[str], location: Optional[str]) -> Optional[int]:
-        """Get cached baud rate for a known device.
-        
-        Args:
-            vendor_id: Vendor ID
-            product_id: Product ID
-            serial_number: Serial number
-            location: USB location
-            
-        Returns:
-            Cached baud rate or None if not found
-        """
-        for device_info in self.port_id_to_device_info.values():
-            # Match based on stable identifiers
-            if (device_info.vendor_id == vendor_id and 
-                device_info.product_id == product_id and
-                device_info.serial_number == serial_number and
-                device_info.location == location and
-                device_info.detected_baud is not None):
-                return device_info.detected_baud
-        return None
-
     def _score_serial_data(self, data: bytes) -> int:
         """Score serial data based on ASCII-like content.
         
@@ -423,18 +377,8 @@ class USBPortMapper:
             vendor_id = f"{port.vid:04x}" if port.vid else None
             product_id = f"{port.pid:04x}" if port.pid else None
             
-            # Check if device is already known (only detect baud on first plug-in)
-            if self._is_device_known(vendor_id, product_id, port.serial_number, port.location):
-                detected_baud = self._get_cached_baud_rate(vendor_id, product_id, port.serial_number, port.location)
-                self.logger.debug(
-                    "baud_cached",
-                    f"Using cached baud rate {detected_baud} for {port.device}",
-                    device_path=port.device,
-                    baud_rate=detected_baud,
-                )
-            else:
-                # New device - detect baud rate using manual scoring
-                detected_baud = await self._detect_baud_rate_manual(port.device)
+            # Always detect baud rate fresh (no caching)
+            detected_baud = await self._detect_baud_rate_manual(port.device)
             
             device_info = DeviceInfo(
                 port_id="",  # Will be set later
