@@ -12,6 +12,7 @@ serial:
   max_connections: 10
   task_queue_size: 100
   connection_retry_attempts: ${CONNECTION_RETRY_ATTEMPTS:3}
+  auto_connect: ${AUTO_CONNECT:true}
 
 buffer:
   size_mb: ${BUFFER_SIZE_MB:10}

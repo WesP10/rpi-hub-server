@@ -94,7 +94,6 @@ async def lifespan(app: FastAPI):
         usb_mapper = initialize_usb_port_mapper(
             scan_interval=settings.serial.scan_interval
         )
-        await usb_mapper.start()
         
         # Initialize Serial Manager
         logger.info("Initializing Serial Manager")
@@ -118,6 +117,129 @@ async def lifespan(app: FastAPI):
                 )
         
         serial_manager.set_data_callback(serial_data_callback)
+        await serial_manager.start()
+        
+        # Set up auto-connection callback for USB devices
+        if settings.serial.auto_connect:
+            async def auto_connect_device(device_info):
+                """Automatically connect to detected devices."""
+                try:
+                    import time
+                    session_id = f"auto-session-{int(time.time())}-{device_info.port_id[:8]}"
+                    
+                    # Use detected baud rate or default
+                    baud_rate = device_info.detected_baud or settings.serial.default_baud_rate
+                    
+                    logger.info(
+                        "auto_connect_triggered",
+                        f"Auto-connecting to {device_info.port_id}",
+                        extra={
+                            "port_id": device_info.port_id,
+                            "device_path": device_info.device_path,
+                            "baud_rate": baud_rate,
+                            "vendor_id": device_info.vendor_id,
+                            "product_id": device_info.product_id,
+                        }
+                    )
+                    
+                    success = await serial_manager.open_connection(
+                        session_id=session_id,
+                        port_id=device_info.port_id,
+                        device_path=device_info.device_path,
+                        baud_rate=baud_rate,
+                        hub_id=settings.hub.hub_id,
+                    )
+                    
+                    if success:
+                        logger.info(
+                            "auto_connect_success",
+                            f"Auto-connected to {device_info.port_id}",
+                            extra={
+                                "port_id": device_info.port_id,
+                                "session_id": session_id,
+                                "baud_rate": baud_rate,
+                            }
+                        )
+                        
+                        # Send device event to server
+                        if hub_agent and hub_agent.is_connected:
+                            await hub_agent.send_device_event(
+                                event_type="connected",
+                                port_id=device_info.port_id,
+                                device_info={
+                                    "port": device_info.device_path,
+                                    "vendor_id": device_info.vendor_id,
+                                    "product_id": device_info.product_id,
+                                    "serial_number": device_info.serial_number,
+                                    "manufacturer": device_info.manufacturer,
+                                    "product": device_info.product,
+                                    "baud_rate": baud_rate,
+                                    "auto_connected": True,
+                                }
+                            )
+                    else:
+                        logger.warning(
+                            "auto_connect_failed",
+                            f"Failed to auto-connect to {device_info.port_id}",
+                            extra={"port_id": device_info.port_id}
+                        )
+                        
+                except Exception as e:
+                    logger.error(
+                        "auto_connect_error",
+                        f"Error auto-connecting to {device_info.port_id}: {e}",
+                        extra={
+                            "port_id": device_info.port_id,
+                            "error": str(e),
+                        },
+                        exc_info=True
+                    )
+            
+            async def auto_disconnect_device(device_info):
+                """Automatically disconnect removed devices."""
+                try:
+                    logger.info(
+                        "auto_disconnect_triggered",
+                        f"Device removed: {device_info.port_id}",
+                        extra={"port_id": device_info.port_id}
+                    )
+                    
+                    # Close the connection
+                    await serial_manager.close_connection(device_info.port_id)
+                    
+                    # Send device event to server
+                    if hub_agent and hub_agent.is_connected:
+                        await hub_agent.send_device_event(
+                            event_type="disconnected",
+                            port_id=device_info.port_id,
+                            device_info={
+                                "port": device_info.device_path,
+                                "vendor_id": device_info.vendor_id,
+                                "product_id": device_info.product_id,
+                            }
+                        )
+                        
+                except Exception as e:
+                    logger.error(
+                        "auto_disconnect_error",
+                        f"Error auto-disconnecting {device_info.port_id}: {e}",
+                        extra={
+                            "port_id": device_info.port_id,
+                            "error": str(e),
+                        },
+                        exc_info=True
+                    )
+            
+            usb_mapper.on_device_connected(auto_connect_device)
+            usb_mapper.on_device_disconnected(auto_disconnect_device)
+            
+            logger.info(
+                "auto_connect_enabled",
+                "Auto-connection enabled for detected devices"
+            )
+        
+        # Start USB port mapper scanning
+        await usb_mapper.start(scan_interval=settings.serial.scan_interval)
         
         # Initialize Buffer Manager
         logger.info("Initializing Buffer Manager")

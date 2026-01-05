@@ -47,6 +47,9 @@ class SerialConfig(BaseSettings):
     connection_retry_attempts: int = Field(
         default=3, description="Connection retry attempts"
     )
+    auto_connect: bool = Field(
+        default=True, description="Automatically connect to detected devices"
+    )
 
 
 class BufferConfig(BaseSettings):
