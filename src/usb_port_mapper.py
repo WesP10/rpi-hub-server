@@ -13,16 +13,13 @@ import serial.tools.list_ports
 
 from src.logging_config import StructuredLogger
 
-# Common baud rates to try (in order of likelihood)
-COMMON_BAUD_RATES = [
-    9600,    # Most common for Arduino
-    115200,  # Modern Arduino boards
-    57600,   # Common alternative
-    38400,
+# Baud rate candidates to try (Arduino/ESP32 defaults first, then comprehensive list)
+BAUD_RATE_CANDIDATES = [
+    # Arduino defaults
+    4800,
+    9600,     # Most common Arduino (Uno, Nano)
     19200,
-    74880,   # ESP8266 boot messages
-    230400,  # High-speed devices
-    250000,  # 3D printers (Marlin)
+    115200,
 ]
 
 
@@ -293,149 +290,89 @@ class USBPortMapper:
                 return device_info.detected_baud
         return None
 
-    async def _detect_baud_rate_with_cli(self, device_path: str) -> int:
-        """Detect baud rate using Arduino CLI board detection.
+    def _score_serial_data(self, data: bytes) -> int:
+        """Score serial data based on ASCII-like content.
+        
+        Args:
+            data: Raw bytes received from serial port
+            
+        Returns:
+            Score (higher is better)
+        """
+        if not data:
+            return 0
+        # Count printable ASCII characters and common control chars (tab, newline, carriage return)
+        return sum(32 <= b <= 126 or b in (9, 10, 13) for b in data)
+
+    async def _detect_baud_rate_manual(self, device_path: str) -> int:
+        """Detect baud rate using manual scoring approach.
+        
+        Tries each baud rate candidate and scores the received data.
+        Returns the baud rate with the highest score.
 
         Args:
             device_path: Serial port device path
 
         Returns:
-            Detected baud rate or 9600 default
+            Detected baud rate with best score
         """
         loop = asyncio.get_event_loop()
         
-        def run_arduino_cli():
-            import subprocess
+        def try_baud_rate(baud: int) -> tuple[int, int]:
+            """Try a baud rate and return (baud, score)."""
             try:
-                # Use --watch flag with timeout to detect boards
-                result = subprocess.run(
-                    ["arduino-cli", "board", "list", "--format", "json"],
-                    capture_output=True,
-                    text=True,
-                    timeout=5.0,
+                ser = serial.Serial(
+                    device_path,
+                    baudrate=baud,
+                    timeout=0.2,
+                    # Use conservative settings for compatibility
+                    bytesize=serial.EIGHTBITS,
+                    parity=serial.PARITY_NONE,
+                    stopbits=serial.STOPBITS_ONE,
                 )
-                if result.returncode == 0:
-                    return result.stdout
-            except (subprocess.TimeoutExpired, FileNotFoundError, Exception):
-                pass
-            return None
-        
-        def get_board_details(fqbn: str):
-            import subprocess
-            try:
-                result = subprocess.run(
-                    ["arduino-cli", "board", "details", "--fqbn", fqbn, "--format", "json"],
-                    capture_output=True,
-                    text=True,
-                    timeout=5.0,
+                time.sleep(0.2)  # Let data accumulate
+                data = ser.read(200)  # Read up to 200 bytes
+                ser.close()
+                score = self._score_serial_data(data)
+                return (baud, score)
+            except (serial.SerialException, OSError) as e:
+                # Port may be busy or not accessible
+                self.logger.debug(
+                    "baud_test_failed",
+                    f"Failed to test baud {baud} on {device_path}: {e}",
+                    baud=baud,
+                    device_path=device_path,
                 )
-                if result.returncode == 0:
-                    return result.stdout
-            except (subprocess.TimeoutExpired, FileNotFoundError, Exception):
-                pass
-            return None
+                return (baud, 0)
         
-        try:
-            output = await loop.run_in_executor(None, run_arduino_cli)
-            if output:
-                data = json.loads(output)
-                boards = data if isinstance(data, list) else [data]
-                
-                # Find matching board by port
-                for board in boards:
-                    port_info = board.get("port", {})
-                    port_address = port_info.get("address", "")
-                    
-                    # Match port (handle different path formats)
-                    if port_address == device_path or port_address in device_path or device_path in port_address:
-                        matching_boards = board.get("matching_boards", [])
-                        
-                        if matching_boards:
-                            fqbn = matching_boards[0].get("fqbn", "")
-                            board_name = matching_boards[0].get("name", "")
-                            
-                            # Get detailed board information
-                            details_output = await loop.run_in_executor(None, lambda: get_board_details(fqbn))
-                            detected_baud = None
-                            
-                            if details_output:
-                                try:
-                                    details = json.loads(details_output)
-                                    
-                                    # Try to extract baud from build properties
-                                    build_properties = details.get("build_properties", [])
-                                    for prop in build_properties:
-                                        prop_lower = prop.lower()
-                                        if "upload.speed" in prop_lower or "serial.baud" in prop_lower:
-                                            # Extract numeric value
-                                            parts = prop.split("=")
-                                            if len(parts) == 2:
-                                                try:
-                                                    detected_baud = int(parts[1].strip())
-                                                    break
-                                                except ValueError:
-                                                    pass
-                                    
-                                    # Check in config_options
-                                    if not detected_baud:
-                                        config_options = details.get("config_options", [])
-                                        for option in config_options:
-                                            if "baud" in option.get("option", "").lower():
-                                                values = option.get("values", [])
-                                                if values:
-                                                    try:
-                                                        detected_baud = int(values[0].get("value", 9600))
-                                                        break
-                                                    except (ValueError, KeyError):
-                                                        pass
-                                except json.JSONDecodeError:
-                                    pass
-                            
-                            # Fallback to known board defaults if details didn't provide baud
-                            if not detected_baud:
-                                if "arduino:avr:uno" in fqbn or "arduino:avr:nano" in fqbn:
-                                    detected_baud = 9600
-                                elif "arduino:avr:mega" in fqbn:
-                                    detected_baud = 115200
-                                elif "arduino:samd" in fqbn or "arduino:mbed" in fqbn:
-                                    detected_baud = 9600
-                                elif "esp8266" in fqbn or "esp32" in fqbn:
-                                    detected_baud = 115200
-                                elif "arduino:megaavr" in fqbn:
-                                    detected_baud = 115200
-                                else:
-                                    detected_baud = 9600
-                            
-                            self.logger.info(
-                                "baud_detected_cli",
-                                f"Arduino CLI detected {board_name} on {device_path} with baud {detected_baud}",
-                                device_path=device_path,
-                                baud_rate=detected_baud,
-                                fqbn=fqbn,
-                                board_name=board_name,
-                            )
-                            return detected_baud
-                        else:
-                            # Port detected but no matching board found
-                            self.logger.debug(
-                                "board_not_recognized",
-                                f"Port {device_path} detected but board not recognized by Arduino CLI",
-                                device_path=device_path,
-                            )
-        except Exception as e:
+        best_baud = 9600  # Default fallback
+        best_score = -1
+        
+        # Try all baud rate candidates
+        for baud in BAUD_RATE_CANDIDATES:
+            baud_rate, score = await loop.run_in_executor(None, try_baud_rate, baud)
+            
             self.logger.debug(
-                "baud_cli_error",
-                f"Arduino CLI detection failed: {e}",
-                error=str(e),
+                "baud_test_score",
+                f"Baud {baud_rate} scored {score} on {device_path}",
+                baud=baud_rate,
+                score=score,
+                device_path=device_path,
             )
+            
+            if score > best_score:
+                best_score = score
+                best_baud = baud_rate
         
-        # Default to 9600 if detection fails
         self.logger.info(
-            "baud_default",
-            f"Using default baud rate 9600 for {device_path}",
+            "baud_detected_manual",
+            f"Detected baud rate {best_baud} (score: {best_score}) for {device_path}",
             device_path=device_path,
+            baud_rate=best_baud,
+            score=best_score,
         )
-        return 9600
+        
+        return best_baud
 
     async def _list_ports_with_baud(self) -> List[DeviceInfo]:
         """List all serial ports with iterative baud rate detection.
@@ -484,8 +421,8 @@ class USBPortMapper:
                     baud_rate=detected_baud,
                 )
             else:
-                # New device - detect baud rate using Arduino CLI
-                detected_baud = await self._detect_baud_rate_with_cli(port.device)
+                # New device - detect baud rate using manual scoring
+                detected_baud = await self._detect_baud_rate_manual(port.device)
             
             device_info = DeviceInfo(
                 port_id="",  # Will be set later
