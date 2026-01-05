@@ -401,23 +401,8 @@ class USBPortMapper:
             vendor_id = f"{port.vid:04x}" if port.vid else None
             product_id = f"{port.pid:04x}" if port.pid else None
             
-            # Check if we have a cached baud rate for this device
-            cached_baud = self._find_cached_baud_rate(
-                vendor_id, product_id, port.serial_number, port.location
-            )
-            
-            if cached_baud is not None:
-                # Use cached baud rate
-                detected_baud = cached_baud
-                self.logger.debug(
-                    "baud_cached",
-                    f"Using cached baud rate {cached_baud} for {port.device}",
-                    device_path=port.device,
-                    baud_rate=cached_baud,
-                )
-            else:
-                # Probe for baud rate if not cached
-                detected_baud = await self._detect_baud_rate(port.device)
+            # Always perform fresh baud rate detection (caching disabled)
+            detected_baud = await self._detect_baud_rate(port.device)
             
             device_info = DeviceInfo(
                 port_id="",  # Will be set later
