@@ -235,6 +235,13 @@ class SerialManager:
                     timeout=connection.timeout,
                 )
 
+                # Reset Arduino by toggling DTR (required for auto-start on RPi)
+                # This mimics Windows behavior and resets the Arduino
+                ser.dtr = False
+                await asyncio.sleep(0.1)  # Brief delay
+                ser.dtr = True
+                await asyncio.sleep(2)  # Wait for Arduino to reset and start sketch
+
                 connection.serial_port = ser
                 connection.status = ConnectionStatus.CONNECTED
                 self.active_connections[port_id] = connection
