@@ -147,15 +147,6 @@ class FlashTask(BaseTask):
                 }
             )
             
-            # Reset device with DTR toggle to start new firmware
-            logger.info(
-                f"Resetting device after flash",
-                extra={"task_id": self.task_id, "port_id": self.port_id}
-            )
-            await asyncio.sleep(0.5)  # Wait for port to settle
-            await self._toggle_dtr(port_path)
-            await asyncio.sleep(1.0)  # Wait for device to restart
-            
             return {
                 "port_id": self.port_id,
                 "board_fqbn": board_fqbn,
@@ -287,44 +278,4 @@ class FlashTask(BaseTask):
                 exc_info=True
             )
             raise RuntimeError(f"Failed to flash firmware: {e}")
-    
-    async def _toggle_dtr(self, port_path: str) -> None:
-        """
-        Toggle DTR signal to reset Arduino device.
-        
-        Args:
-            port_path: Serial port path
-        """
-        try:
-            import serial
-            
-            # Open port with DTR control
-            ser = serial.Serial(
-                port=port_path,
-                baudrate=1200,  # Low baud rate for bootloader reset
-                timeout=1
-            )
-            
-            try:
-                # Toggle DTR: High -> Low -> High
-                ser.dtr = True
-                await asyncio.sleep(0.1)
-                ser.dtr = False
-                await asyncio.sleep(0.1)
-                ser.dtr = True
-                await asyncio.sleep(0.1)
-                
-                logger.debug(
-                    f"DTR toggle completed",
-                    extra={"port_path": port_path}
-                )
-                
-            finally:
-                ser.close()
-                
-        except Exception as e:
-            # Log but don't fail - some boards may not support DTR reset
-            logger.warning(
-                f"DTR toggle failed (device may not support reset): {e}",
-                extra={"port_path": port_path}
-            )
+

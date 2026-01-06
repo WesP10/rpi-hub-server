@@ -478,6 +478,50 @@ class USBPortMapper:
         """
         return self.port_id_to_device_info.get(port_id)
 
+    def get_all_devices(self) -> List[Dict[str, any]]:
+        """Get all devices as dictionaries for API responses.
+
+        Returns:
+            List of device information dictionaries
+        """
+        devices = []
+        for port_id, device_info in self.port_id_to_device_info.items():
+            devices.append({
+                "port_id": port_id,
+                "port": device_info.device_path,
+                "description": device_info.description,
+                "manufacturer": device_info.manufacturer,
+                "serial_number": device_info.serial_number,
+                "vendor_id": device_info.vendor_id,
+                "product_id": device_info.product_id,
+                "detected_baud": device_info.detected_baud,
+            })
+        return devices
+
+    def get_device_by_id(self, port_id: str) -> Optional[Dict[str, any]]:
+        """Get device by port ID as dictionary for API responses.
+
+        Args:
+            port_id: Port identifier
+
+        Returns:
+            Device information dictionary or None if not found
+        """
+        device_info = self.port_id_to_device_info.get(port_id)
+        if not device_info:
+            return None
+        
+        return {
+            "port_id": port_id,
+            "port": device_info.device_path,
+            "description": device_info.description,
+            "manufacturer": device_info.manufacturer,
+            "serial_number": device_info.serial_number,
+            "vendor_id": device_info.vendor_id,
+            "product_id": device_info.product_id,
+            "detected_baud": device_info.detected_baud,
+        }
+
     async def list_mapped_connections(self) -> List[MappedConnection]:
         """List all mapped connections.
 
