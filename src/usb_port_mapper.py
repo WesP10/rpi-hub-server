@@ -69,9 +69,12 @@ class USBPortMapper:
         self.persistence_path = Path(persistence_path)
         self.default_baud_rate = default_baud_rate
 
-        # Mappings
+        # Mappings (current/live devices only)
         self.device_path_to_port_id: Dict[str, str] = {}
         self.port_id_to_device_info: Dict[str, DeviceInfo] = {}
+        
+        # Historical mappings for port_id consistency (not live device data)
+        self.saved_mappings: Dict[str, Dict] = {}
 
         # Tracking
         self.last_scan_time: Optional[datetime] = None
@@ -460,11 +463,30 @@ class USBPortMapper:
         Returns:
             Stable port ID
         """
-        # Check if we already have a mapping
+        # Check if we already have a mapping for this device
         if device_path in self.device_path_to_port_id:
             return self.device_path_to_port_id[device_path]
 
-        # Generate stable ID from device characteristics
+        # Check saved mappings for devices with matching characteristics
+        if device_info:
+            for saved_port_id, saved_info in self.saved_mappings.items():
+                # Match by location/serial/vendor/product
+                if (
+                    saved_info.get("location") == device_info.location and
+                    saved_info.get("serial_number") == device_info.serial_number and
+                    saved_info.get("vendor_id") == device_info.vendor_id and
+                    saved_info.get("product_id") == device_info.product_id and
+                    device_info.location  # Must have location data
+                ):
+                    self.logger.info(
+                        "port_id_reused",
+                        f"Reusing port_id {saved_port_id} for {device_path}",
+                        port_id=saved_port_id,
+                        device_path=device_path,
+                    )
+                    return saved_port_id
+
+        # Generate new stable ID from device characteristics
         if device_info:
             # Use location and serial number for stable ID
             id_source = (
@@ -621,7 +643,11 @@ class USBPortMapper:
             )
 
     async def load_mappings(self) -> None:
-        """Load port mappings from disk."""
+        """Load port mappings from disk for port_id consistency only.
+        
+        Note: This does NOT populate live device info - that comes from actual scans.
+        Saved mappings are only used to generate consistent port IDs across restarts.
+        """
         try:
             if not self.persistence_path.exists():
                 self.logger.info(
@@ -633,27 +659,13 @@ class USBPortMapper:
             with open(self.persistence_path, "r") as f:
                 data = json.load(f)
 
-            # Restore saved device info (especially baud rates) for matching
-            mappings = data.get("mappings", {})
-            for port_id, saved_info in mappings.items():
-                # Create device info from saved data
-                device_info = DeviceInfo(
-                    port_id=port_id,
-                    device_path=saved_info.get("device_path", ""),
-                    vendor_id=saved_info.get("vendor_id"),
-                    product_id=saved_info.get("product_id"),
-                    serial_number=saved_info.get("serial_number"),
-                    location=saved_info.get("location"),
-                    detected_baud=saved_info.get("detected_baud"),
-                )
-                # Populate BOTH mappings to keep them in sync
-                self.port_id_to_device_info[port_id] = device_info
-                self.device_path_to_port_id[device_info.device_path] = port_id
+            # Store saved mappings for port_id generation only
+            self.saved_mappings = data.get("mappings", {})
 
             self.logger.info(
                 "mappings_loaded",
-                f"Loaded {len(mappings)} saved mappings with cached baud rates",
-                count=len(mappings),
+                f"Loaded {len(self.saved_mappings)} saved mappings for port_id consistency",
+                count=len(self.saved_mappings),
             )
 
         except Exception as e:
