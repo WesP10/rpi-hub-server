@@ -91,6 +91,21 @@ class USBPortMapper:
             scan_interval: Scan interval in seconds
         """
         self._running = True
+        
+        # Clean up any existing persistence file to prevent stale data
+        try:
+            if self.persistence_path.exists():
+                self.persistence_path.unlink()
+                self.logger.info(
+                    "persistence_cleaned",
+                    f"Removed stale persistence file: {self.persistence_path}"
+                )
+        except Exception as e:
+            self.logger.warning(
+                "persistence_cleanup_failed",
+                f"Could not remove persistence file: {e}",
+                error=str(e),
+            )
 
         # Initial scan
         await self.refresh()
@@ -225,39 +240,6 @@ class USBPortMapper:
             removed_devices=len(removed_device_ids),
             total_ports=len(self.port_id_to_device_info),
         )
-
-    async def detect_new_devices(self) -> List[DeviceInfo]:
-        """Detect newly connected devices.
-
-        Returns:
-            List of new device info
-        """
-        current_ports = await self._list_ports_with_baud()
-        new_devices = []
-
-        for device_info in current_ports:
-            if device_info.device_path not in self.device_path_to_port_id:
-                new_devices.append(device_info)
-
-        return new_devices
-
-    async def detect_removed_devices(self) -> List[str]:
-        """Detect removed devices.
-
-        Returns:
-            List of removed port IDs
-        """
-        current_paths = {
-            info.device_path
-            for info in await self._list_ports_with_baud()
-        }
-
-        removed_port_ids = []
-        for device_path, port_id in list(self.device_path_to_port_id.items()):
-            if device_path not in current_paths:
-                removed_port_ids.append(port_id)
-
-        return removed_port_ids
 
     def _has_detected_baud(self, device_path: str) -> Optional[int]:
         """Check if device already has a detected baud rate in memory.
