@@ -69,12 +69,9 @@ class USBPortMapper:
         self.persistence_path = Path(persistence_path)
         self.default_baud_rate = default_baud_rate
 
-        # Mappings (current/live devices only)
+        # Mappings (live devices only - no cross-run caching)
         self.device_path_to_port_id: Dict[str, str] = {}
         self.port_id_to_device_info: Dict[str, DeviceInfo] = {}
-        
-        # Historical mappings for port_id consistency (not live device data)
-        self.saved_mappings: Dict[str, Dict] = {}
 
         # Tracking
         self.last_scan_time: Optional[datetime] = None
@@ -94,7 +91,6 @@ class USBPortMapper:
             scan_interval: Scan interval in seconds
         """
         self._running = True
-        await self.load_mappings()
 
         # Initial scan
         await self.refresh()
@@ -117,7 +113,6 @@ class USBPortMapper:
             except asyncio.CancelledError:
                 pass
 
-        await self.save_mappings()
         self.logger.info("usb_mapper_stopped", "USB Port Mapper stopped")
 
     async def _scan_loop(self, interval: int) -> None:
@@ -151,22 +146,22 @@ class USBPortMapper:
         updated_devices = []
         removed_device_ids = []
 
-        # Process current devices: check if new or existing
+        # Process all current devices
         for device_info in current_devices:
-            if device_info.device_path in self.device_path_to_port_id:
-                # Existing device - update with fresh info
-                port_id = self.device_path_to_port_id[device_info.device_path]
-                device_info.port_id = port_id
-                self.port_id_to_device_info[port_id] = device_info
-                updated_devices.append(device_info)
-            else:
-                # New device - add to mappings
-                port_id = await self.get_port_id(device_info.device_path, device_info)
-                device_info.port_id = port_id
-                self.port_id_to_device_info[port_id] = device_info
-                self.device_path_to_port_id[device_info.device_path] = port_id
+            # Generate stable port_id from device characteristics
+            port_id = await self.get_port_id(device_info.device_path, device_info)
+            device_info.port_id = port_id
+            
+            # Check if this is a new device or existing
+            is_new = device_info.device_path not in self.device_path_to_port_id
+            
+            # Update mappings with fresh data
+            self.port_id_to_device_info[port_id] = device_info
+            self.device_path_to_port_id[device_info.device_path] = port_id
+            
+            if is_new:
                 new_devices.append(device_info)
-
+                
                 # Trigger callbacks for new devices
                 for callback in self._device_connected_callbacks:
                     try:
@@ -189,6 +184,8 @@ class USBPortMapper:
                     detected_baud=device_info.detected_baud,
                     source=device_info.source,
                 )
+            else:
+                updated_devices.append(device_info)
 
         # Process removed devices
         for device_path, port_id in list(self.device_path_to_port_id.items()):
@@ -444,6 +441,14 @@ class USBPortMapper:
                 detected_baud=detected_baud,
                 source="pyserial",
             )
+            
+            self.logger.debug(
+                "device_info_created",
+                f"Created DeviceInfo with device_path={port.device}",
+                device_path=port.device,
+                vendor_id=vendor_id,
+                product_id=product_id,
+            )
 
             devices.append(device_info)
 
@@ -463,30 +468,7 @@ class USBPortMapper:
         Returns:
             Stable port ID
         """
-        # Check if we already have a mapping for this device
-        if device_path in self.device_path_to_port_id:
-            return self.device_path_to_port_id[device_path]
-
-        # Check saved mappings for devices with matching characteristics
-        if device_info:
-            for saved_port_id, saved_info in self.saved_mappings.items():
-                # Match by location/serial/vendor/product
-                if (
-                    saved_info.get("location") == device_info.location and
-                    saved_info.get("serial_number") == device_info.serial_number and
-                    saved_info.get("vendor_id") == device_info.vendor_id and
-                    saved_info.get("product_id") == device_info.product_id and
-                    device_info.location  # Must have location data
-                ):
-                    self.logger.info(
-                        "port_id_reused",
-                        f"Reusing port_id {saved_port_id} for {device_path}",
-                        port_id=saved_port_id,
-                        device_path=device_path,
-                    )
-                    return saved_port_id
-
-        # Generate new stable ID from device characteristics
+        # Generate stable ID from device characteristics
         if device_info:
             # Use location and serial number for stable ID
             id_source = (
@@ -601,79 +583,6 @@ class USBPortMapper:
         )
 
         return True
-
-    async def save_mappings(self) -> None:
-        """Save port mappings to disk."""
-        try:
-            # Create directory if it doesn't exist
-            self.persistence_path.parent.mkdir(parents=True, exist_ok=True)
-
-            # Serialize mappings
-            data = {
-                "mappings": {
-                    port_id: {
-                        "device_path": info.device_path,
-                        "vendor_id": info.vendor_id,
-                        "product_id": info.product_id,
-                        "serial_number": info.serial_number,
-                        "location": info.location,
-                        "detected_baud": info.detected_baud,
-                    }
-                    for port_id, info in self.port_id_to_device_info.items()
-                },
-                "last_saved": datetime.now().isoformat(),
-            }
-
-            # Write to file
-            with open(self.persistence_path, "w") as f:
-                json.dump(data, f, indent=2)
-
-            self.logger.info(
-                "mappings_saved",
-                f"Saved {len(self.port_id_to_device_info)} mappings",
-                count=len(self.port_id_to_device_info),
-                path=str(self.persistence_path),
-            )
-
-        except Exception as e:
-            self.logger.error(
-                "mappings_save_error",
-                f"Error saving mappings: {e}",
-                error=str(e),
-            )
-
-    async def load_mappings(self) -> None:
-        """Load port mappings from disk for port_id consistency only.
-        
-        Note: This does NOT populate live device info - that comes from actual scans.
-        Saved mappings are only used to generate consistent port IDs across restarts.
-        """
-        try:
-            if not self.persistence_path.exists():
-                self.logger.info(
-                    "no_mappings_file",
-                    "No existing mappings file found",
-                )
-                return
-
-            with open(self.persistence_path, "r") as f:
-                data = json.load(f)
-
-            # Store saved mappings for port_id generation only
-            self.saved_mappings = data.get("mappings", {})
-
-            self.logger.info(
-                "mappings_loaded",
-                f"Loaded {len(self.saved_mappings)} saved mappings for port_id consistency",
-                count=len(self.saved_mappings),
-            )
-
-        except Exception as e:
-            self.logger.error(
-                "mappings_load_error",
-                f"Error loading mappings: {e}",
-                error=str(e),
-            )
 
     def on_device_connected(self, callback) -> None:
         """Register callback for device connection events.
