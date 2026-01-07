@@ -132,10 +132,22 @@ async def list_connections():
         active_connections = serial_manager.get_active_connections()
         
         connections = []
+        stale_connections = []
+        
         for conn in active_connections:
             # Get device info for port path
             device = usb_mapper.get_device_by_id(conn.port_id)
-            port_path = device["port"] if device else "unknown"
+            
+            # Check if device is still physically present
+            if not device:
+                logger.warning(
+                    f"Connection {conn.port_id} exists but device not found - marking for cleanup",
+                    extra={"port_id": conn.port_id, "session_id": conn.session_id}
+                )
+                stale_connections.append(conn.port_id)
+                continue
+            
+            port_path = device["port"]
             
             connections.append(
                 ConnectionInfo(
@@ -148,6 +160,21 @@ async def list_connections():
                     bytes_written=conn.bytes_written
                 )
             )
+        
+        # Clean up stale connections asynchronously
+        if stale_connections:
+            logger.info(
+                f"Cleaning up {len(stale_connections)} stale connection(s)",
+                extra={"stale_count": len(stale_connections)}
+            )
+            for port_id in stale_connections:
+                try:
+                    await serial_manager.close_connection(port_id)
+                except Exception as e:
+                    logger.error(
+                        f"Failed to close stale connection {port_id}: {e}",
+                        extra={"port_id": port_id, "error": str(e)}
+                    )
         
         return ConnectionListResponse(
             connections=connections,
