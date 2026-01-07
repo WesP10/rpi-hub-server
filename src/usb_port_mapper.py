@@ -140,46 +140,32 @@ class USBPortMapper:
         """Scan for USB devices and update mappings."""
         scan_start = datetime.now()
 
-        # Get current ports
-        new_devices = await self.detect_new_devices()
-        removed_devices = await self.detect_removed_devices()
+        # Get current ports from scan
+        current_devices = await self._list_ports_with_baud()
+        current_paths = {dev.device_path for dev in current_devices}
+        
+        new_devices = []
+        updated_devices = []
+        removed_device_ids = []
 
-        # Process new devices
-        for device_info in new_devices:
-            port_id = await self.get_port_id(device_info.device_path, device_info)
-            device_info.port_id = port_id
-            self.port_id_to_device_info[port_id] = device_info
-            self.device_path_to_port_id[device_info.device_path] = port_id
+        # Process current devices: check if new or existing
+        for device_info in current_devices:
+            if device_info.device_path in self.device_path_to_port_id:
+                # Existing device - update with fresh info
+                port_id = self.device_path_to_port_id[device_info.device_path]
+                device_info.port_id = port_id
+                self.port_id_to_device_info[port_id] = device_info
+                updated_devices.append(device_info)
+            else:
+                # New device - add to mappings
+                port_id = await self.get_port_id(device_info.device_path, device_info)
+                device_info.port_id = port_id
+                self.port_id_to_device_info[port_id] = device_info
+                self.device_path_to_port_id[device_info.device_path] = port_id
+                new_devices.append(device_info)
 
-            # Trigger callbacks
-            for callback in self._device_connected_callbacks:
-                try:
-                    if asyncio.iscoroutinefunction(callback):
-                        await callback(device_info)
-                    else:
-                        callback(device_info)
-                except Exception as e:
-                    self.logger.error(
-                        "callback_error",
-                        f"Error in device connected callback: {e}",
-                        error=str(e),
-                    )
-
-            self.logger.port_detected(
-                port_id,
-                device_info.device_path,
-                vendor_id=device_info.vendor_id,
-                product_id=device_info.product_id,
-                detected_baud=device_info.detected_baud,
-                source=device_info.source,
-            )
-
-        # Process removed devices
-        for port_id in removed_devices:
-            device_info = self.port_id_to_device_info.get(port_id)
-            if device_info:
-                # Trigger callbacks
-                for callback in self._device_disconnected_callbacks:
+                # Trigger callbacks for new devices
+                for callback in self._device_connected_callbacks:
                     try:
                         if asyncio.iscoroutinefunction(callback):
                             await callback(device_info)
@@ -188,14 +174,43 @@ class USBPortMapper:
                     except Exception as e:
                         self.logger.error(
                             "callback_error",
-                            f"Error in device disconnected callback: {e}",
+                            f"Error in device connected callback: {e}",
                             error=str(e),
                         )
 
-                self.logger.port_removed(port_id, device_path=device_info.device_path)
+                self.logger.port_detected(
+                    port_id,
+                    device_info.device_path,
+                    vendor_id=device_info.vendor_id,
+                    product_id=device_info.product_id,
+                    detected_baud=device_info.detected_baud,
+                    source=device_info.source,
+                )
+
+        # Process removed devices
+        for device_path, port_id in list(self.device_path_to_port_id.items()):
+            if device_path not in current_paths:
+                removed_device_ids.append(port_id)
+                device_info = self.port_id_to_device_info.get(port_id)
+                if device_info:
+                    # Trigger callbacks
+                    for callback in self._device_disconnected_callbacks:
+                        try:
+                            if asyncio.iscoroutinefunction(callback):
+                                await callback(device_info)
+                            else:
+                                callback(device_info)
+                        except Exception as e:
+                            self.logger.error(
+                                "callback_error",
+                                f"Error in device disconnected callback: {e}",
+                                error=str(e),
+                            )
+
+                    self.logger.port_removed(port_id, device_path=device_info.device_path)
 
                 # Clean up mappings
-                self.device_path_to_port_id.pop(device_info.device_path, None)
+                self.device_path_to_port_id.pop(device_path, None)
                 self.port_id_to_device_info.pop(port_id, None)
 
         self.last_scan_time = datetime.now()
@@ -206,7 +221,8 @@ class USBPortMapper:
             f"Port scan completed in {scan_duration:.0f}ms",
             duration_ms=scan_duration,
             new_devices=len(new_devices),
-            removed_devices=len(removed_devices),
+            updated_devices=len(updated_devices),
+            removed_devices=len(removed_device_ids),
             total_ports=len(self.port_id_to_device_info),
         )
 
