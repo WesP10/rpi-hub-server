@@ -630,7 +630,9 @@ class USBPortMapper:
                     location=saved_info.get("location"),
                     detected_baud=saved_info.get("detected_baud"),
                 )
+                # Populate BOTH mappings to keep them in sync
                 self.port_id_to_device_info[port_id] = device_info
+                self.device_path_to_port_id[device_info.device_path] = port_id
 
             self.logger.info(
                 "mappings_loaded",
