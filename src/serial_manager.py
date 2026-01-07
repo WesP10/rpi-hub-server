@@ -115,6 +115,9 @@ class SerialManager:
         # Data callback for routing serial data
         self._data_callback: Optional[Callable] = None
 
+        # Device disconnect callback
+        self._disconnect_callback: Optional[Callable] = None
+
         self.logger.info(
             "serial_manager_initialized",
             "Serial Manager initialized",
@@ -153,6 +156,14 @@ class SerialManager:
             callback: Async function(port_id: str, session_id: str, data: bytes)
         """
         self._data_callback = callback
+
+    def set_disconnect_callback(self, callback: Callable) -> None:
+        """Set callback for device disconnect events.
+
+        Args:
+            callback: Async function(port_id: str, session_id: str)
+        """
+        self._disconnect_callback = callback
 
     async def open_connection(
         self,
@@ -427,6 +438,22 @@ class SerialManager:
                 )
                 connection.status = ConnectionStatus.ERROR
                 connection.error_count += 1
+                
+                # Notify about disconnect if callback registered
+                if self._disconnect_callback:
+                    try:
+                        if asyncio.iscoroutinefunction(self._disconnect_callback):
+                            await self._disconnect_callback(port_id, connection.session_id)
+                        else:
+                            self._disconnect_callback(port_id, connection.session_id)
+                    except Exception as callback_error:
+                        self.logger.error(
+                            "disconnect_callback_error",
+                            f"Error in disconnect callback: {callback_error}",
+                            port_id=port_id,
+                            error=str(callback_error),
+                        )
+                
                 break
 
             except asyncio.CancelledError:

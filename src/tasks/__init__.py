@@ -9,6 +9,7 @@ from .base_task import BaseTask, TaskStatus
 from .serial_write_task import SerialWriteTask
 from .flash_task import FlashTask
 from .restart_task import RestartTask
+from .close_connection_task import CloseConnectionTask
 
 __all__ = [
     "BaseTask",
@@ -16,4 +17,5 @@ __all__ = [
     "SerialWriteTask",
     "FlashTask",
     "RestartTask",
+    "CloseConnectionTask",
 ]

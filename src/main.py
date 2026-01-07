@@ -184,6 +184,51 @@ async def lifespan(app: FastAPI):
                 )
         
         serial_manager.set_data_callback(serial_data_callback)
+        
+        # Set disconnect callback for serial errors (physical disconnect)
+        async def serial_disconnect_callback(port_id: str, session_id: str):
+            """Callback for serial disconnect - notifies cloud service."""
+            try:
+                logger.info(
+                    f"Physical disconnect detected for {port_id}",
+                    extra={
+                        "event": "physical_disconnect_detected",
+                        "port_id": port_id,
+                        "session_id": session_id,
+                    }
+                )
+                
+                # Send device event to server
+                if hub_agent and hub_agent.is_connected:
+                    await hub_agent.send_device_event(
+                        event_type="disconnected",
+                        port_id=port_id,
+                        device_info={
+                            "session_id": session_id,
+                            "reason": "physical_disconnect"
+                        }
+                    )
+                    logger.info(
+                        f"Disconnect notification sent for {port_id}",
+                        extra={"event": "disconnect_notification_sent", "port_id": port_id}
+                    )
+                
+                # Close the connection to clean up resources
+                await serial_manager.close_connection(port_id)
+                
+            except Exception as e:
+                logger.error(
+                    f"Error in serial disconnect callback: {e}",
+                    extra={
+                        "event": "disconnect_callback_error",
+                        "port_id": port_id,
+                        "error": str(e),
+                        "error_type": type(e).__name__,
+                    },
+                    exc_info=True
+                )
+        
+        serial_manager.set_disconnect_callback(serial_disconnect_callback)
         await serial_manager.start()
         
         # Set up auto-connection callback for USB devices

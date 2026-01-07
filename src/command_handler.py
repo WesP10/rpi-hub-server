@@ -12,7 +12,7 @@ from datetime import datetime
 
 from .config import get_settings
 from .logging_config import get_logger
-from .tasks import BaseTask, SerialWriteTask, FlashTask, RestartTask, TaskStatus
+from .tasks import BaseTask, SerialWriteTask, FlashTask, RestartTask, CloseConnectionTask, TaskStatus
 
 logger = get_logger(__name__)
 
@@ -248,6 +248,18 @@ class CommandHandler:
                 raise ValueError("Missing portId for restart")
             
             return RestartTask(
+                task_id=task_id,
+                port_id=port_id,
+                priority=priority,
+                params=params
+            )
+        
+        elif command_type == "close_connection":
+            # Validate close connection parameters
+            if not port_id:
+                raise ValueError("Missing portId for close_connection")
+            
+            return CloseConnectionTask(
                 task_id=task_id,
                 port_id=port_id,
                 priority=priority,
