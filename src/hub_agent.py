@@ -520,7 +520,7 @@ class HubAgent:
             error: Optional error message
         """
         payload = {
-            "task_id": task_id,
+            "taskId": task_id,
             "status": status,
             "timestamp": datetime.utcnow().isoformat(),
         }
@@ -544,24 +544,28 @@ class HubAgent:
             task_status_data: Task status data from CommandHandler callback
         """
         # Extract fields from task status data
-        task_id = task_status_data.get("task_id")
+        task_id = task_status_data.get("task_id") or task_status_data.get("taskId")
         status = task_status_data.get("status")
         result = task_status_data.get("result")
         error = task_status_data.get("error")
+        progress = task_status_data.get("progress")
         
         # Add to buffer (synchronous operation)
         payload = {
-            "task_id": task_id,
+            "taskId": task_id,
             "status": status,
-            "command_type": task_status_data.get("command_type"),
-            "port_id": task_status_data.get("port_id"),
             "timestamp": task_status_data.get("timestamp") or datetime.utcnow().isoformat(),
+            # Additional fields passed through for client convenience
+            "commandType": task_status_data.get("command_type") or task_status_data.get("commandType"),
+            "portId": task_status_data.get("port_id") or task_status_data.get("portId"),
         }
         
         if result is not None:
             payload["result"] = result
         if error is not None:
             payload["error"] = error
+        if progress is not None:
+            payload["progress"] = progress
         
         self.buffer_manager.add_message("task_status", payload)
 
