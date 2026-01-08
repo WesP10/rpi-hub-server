@@ -32,6 +32,30 @@ logger = get_logger(__name__)
 hub_agent = None
 
 
+async def _send_device_event_when_connected(hub_agent, device_event_data):
+    """Wait for hub agent to connect, then send queued device event."""
+    max_wait = 30  # Wait up to 30 seconds
+    wait_interval = 0.5
+    elapsed = 0
+    
+    while elapsed < max_wait:
+        if hub_agent and hub_agent.is_connected:
+            logger.info(
+                f"Hub agent connected, sending queued device event for {device_event_data['port_id']}",
+                extra={"event": "sending_queued_device_event", "port_id": device_event_data["port_id"]}
+            )
+            await hub_agent.send_device_event(**device_event_data)
+            return
+        
+        await asyncio.sleep(wait_interval)
+        elapsed += wait_interval
+    
+    logger.warning(
+        f"Hub agent never connected, device event for {device_event_data['port_id']} not sent",
+        extra={"event": "device_event_timeout", "port_id": device_event_data["port_id"]}
+    )
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """
@@ -273,21 +297,33 @@ async def lifespan(app: FastAPI):
                             }
                         )
                         
-                        # Send device event to server
+                        # Send device event to server (queue for later if not connected yet)
+                        device_event_data = {
+                            "event_type": "connected",
+                            "port_id": device_info.port_id,
+                            "device_info": {
+                                "port": device_info.device_path,
+                                "vendor_id": device_info.vendor_id,
+                                "product_id": device_info.product_id,
+                                "serial_number": device_info.serial_number,
+                                "manufacturer": device_info.manufacturer,
+                                "product": device_info.product,
+                                "baud_rate": baud_rate,
+                                "auto_connected": True,
+                            }
+                        }
+                        
                         if hub_agent and hub_agent.is_connected:
-                            await hub_agent.send_device_event(
-                                event_type="connected",
-                                port_id=device_info.port_id,
-                                device_info={
-                                    "port": device_info.device_path,
-                                    "vendor_id": device_info.vendor_id,
-                                    "product_id": device_info.product_id,
-                                    "serial_number": device_info.serial_number,
-                                    "manufacturer": device_info.manufacturer,
-                                    "product": device_info.product,
-                                    "baud_rate": baud_rate,
-                                    "auto_connected": True,
-                                }
+                            await hub_agent.send_device_event(**device_event_data)
+                        else:
+                            # Queue event to send once connected
+                            logger.info(
+                                f"Hub agent not connected yet, will send device event for {device_info.port_id} after connection",
+                                extra={"event": "device_event_queued", "port_id": device_info.port_id}
+                            )
+                            # Store event for later (will be sent by hub_agent after connect)
+                            asyncio.create_task(
+                                _send_device_event_when_connected(hub_agent, device_event_data)
                             )
                     else:
                         logger.warning(

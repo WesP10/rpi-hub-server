@@ -437,12 +437,15 @@ class USBPortMapper:
                 source="pyserial",
             )
             
-            self.logger.debug(
+            self.logger.info(
                 "device_info_created",
-                f"Created DeviceInfo with device_path={port.device}",
+                f"Created DeviceInfo: device_path={port.device}, vendor_id={vendor_id}, product_id={product_id}",
                 device_path=port.device,
                 vendor_id=vendor_id,
                 product_id=product_id,
+                serial_number=port.serial_number,
+                manufacturer=port.manufacturer,
+                location=port.location,
             )
 
             devices.append(device_info)
