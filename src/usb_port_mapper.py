@@ -167,6 +167,19 @@ class USBPortMapper:
             port_id = await self.get_port_id(device_info.device_path, device_info)
             device_info.port_id = port_id
             
+            # Debug log to verify device_path is correct
+            self.logger.debug(
+                "device_processing",
+                f"Processing device: port_id={port_id}, device_path={device_info.device_path}",
+                port_id=port_id,
+                device_path=device_info.device_path,
+                vendor_id=device_info.vendor_id,
+                product_id=device_info.product_id,
+                serial_number=device_info.serial_number,
+                manufacturer=device_info.manufacturer,
+                location=device_info.location,
+            )
+            
             # Check if this is a new device or existing
             is_new = device_info.device_path not in self.device_path_to_port_id
             
@@ -452,13 +465,16 @@ class USBPortMapper:
         """
         # Generate stable ID from device characteristics
         if device_info:
-            # Use location and serial number for stable ID
+            # Use location and serial number for stable ID, fallback to device path if no unique identifiers
             id_source = (
                 f"{device_info.location or ''}"
                 f"{device_info.serial_number or ''}"
                 f"{device_info.vendor_id or ''}"
                 f"{device_info.product_id or ''}"
             )
+            # If no unique identifiers available, include device path to ensure uniqueness
+            if not id_source or id_source == "":
+                id_source = device_path
         else:
             # Fallback to device path
             id_source = device_path
@@ -488,7 +504,7 @@ class USBPortMapper:
         """
         devices = []
         for port_id, device_info in self.port_id_to_device_info.items():
-            devices.append({
+            device_dict = {
                 "port_id": port_id,
                 "port": device_info.device_path,
                 "description": device_info.description,
@@ -497,7 +513,26 @@ class USBPortMapper:
                 "vendor_id": device_info.vendor_id,
                 "product_id": device_info.product_id,
                 "detected_baud": device_info.detected_baud,
-            })
+            }
+            
+            # Debug log
+            self.logger.debug(
+                "get_all_devices_entry",
+                f"Device {port_id}: device_path={device_info.device_path}",
+                port_id=port_id,
+                device_path=device_info.device_path,
+                device_dict=device_dict,
+            )
+            
+            devices.append(device_dict)
+        
+        self.logger.info(
+            "get_all_devices",
+            f"Returning {len(devices)} devices",
+            count=len(devices),
+            port_ids=list(self.port_id_to_device_info.keys()),
+        )
+        
         return devices
 
     def get_device_by_id(self, port_id: str) -> Optional[Dict[str, any]]:
