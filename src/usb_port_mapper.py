@@ -72,6 +72,9 @@ class USBPortMapper:
         # Mappings (live devices only - no cross-run caching)
         self.device_path_to_port_id: Dict[str, str] = {}
         self.port_id_to_device_info: Dict[str, DeviceInfo] = {}
+        
+        # Cache device signatures to avoid recreating DeviceInfo unnecessarily
+        self._device_signatures: Dict[str, str] = {}  # device_path -> signature hash
 
         # Tracking
         self.last_scan_time: Optional[datetime] = None
@@ -237,9 +240,10 @@ class USBPortMapper:
 
                     self.logger.port_removed(port_id, device_path=device_info.device_path)
 
-                # Clean up mappings
+                # Clean up mappings and signature cache
                 self.device_path_to_port_id.pop(device_path, None)
                 self.port_id_to_device_info.pop(port_id, None)
+                self._device_signatures.pop(device_path, None)
 
         self.last_scan_time = datetime.now()
         scan_duration = (self.last_scan_time - scan_start).total_seconds() * 1000
@@ -273,6 +277,20 @@ class USBPortMapper:
             if device_info and device_info.detected_baud is not None:
                 return device_info.detected_baud
         return None
+    
+    def _compute_device_signature(self, port) -> str:
+        """Compute a signature hash for a device to detect changes.
+        
+        Args:
+            port: Serial port info object
+            
+        Returns:
+            SHA256 hash of device properties
+        """
+        vendor_id = f"{port.vid:04x}" if port.vid else "none"
+        product_id = f"{port.pid:04x}" if port.pid else "none"
+        signature_str = f"{port.device}|{vendor_id}|{product_id}|{port.serial_number or ''}|{port.location or ''}"
+        return hashlib.sha256(signature_str.encode()).hexdigest()[:16]
 
     def _score_serial_data(self, data: bytes) -> int:
         """Score serial data based on ASCII-like content.
@@ -403,7 +421,22 @@ class USBPortMapper:
                         device_path=port.device,
                     )
                     continue
-            # Format vendor and product IDs
+            
+            # Compute device signature to check if it changed
+            current_signature = self._compute_device_signature(port)
+            cached_signature = self._device_signatures.get(port.device)
+            
+            # If device signature matches cache, reuse existing DeviceInfo
+            if cached_signature == current_signature:
+                port_id = self.device_path_to_port_id.get(port.device)
+                if port_id:
+                    cached_device = self.port_id_to_device_info.get(port_id)
+                    if cached_device:
+                        # Device unchanged - reuse cached object
+                        devices.append(cached_device)
+                        continue
+            
+            # Device is new or changed - create/update DeviceInfo
             vendor_id = f"{port.vid:04x}" if port.vid else None
             product_id = f"{port.pid:04x}" if port.pid else None
             
@@ -437,16 +470,21 @@ class USBPortMapper:
                 source="pyserial",
             )
             
-            self.logger.info(
-                "device_info_created",
-                f"Created DeviceInfo: device_path={port.device}, vendor_id={vendor_id}, product_id={product_id}",
-                device_path=port.device,
-                vendor_id=vendor_id,
-                product_id=product_id,
-                serial_number=port.serial_number,
-                manufacturer=port.manufacturer,
-                location=port.location,
-            )
+            # Update signature cache
+            self._device_signatures[port.device] = current_signature
+            
+            # Only log when device info is actually created/changed
+            if cached_signature != current_signature:
+                self.logger.info(
+                    "device_info_created",
+                    f"Created DeviceInfo: device_path={port.device}, vendor_id={vendor_id}, product_id={product_id}",
+                    device_path=port.device,
+                    vendor_id=vendor_id,
+                    product_id=product_id,
+                    serial_number=port.serial_number,
+                    manufacturer=port.manufacturer,
+                    location=port.location,
+                )
 
             devices.append(device_info)
 
