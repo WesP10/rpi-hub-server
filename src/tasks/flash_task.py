@@ -97,8 +97,14 @@ class FlashTask(BaseTask):
             }
         )
         
-        # Close serial connection if open
-        await serial_manager.close_connection(self.port_id)
+        # Close serial connection if one is already open for this port to avoid conflicts
+        if serial_manager.get_connection(self.port_id):
+            await serial_manager.close_connection(self.port_id)
+        else:
+            logger.debug(
+                "No existing connection to close before flash",
+                extra={"task_id": self.task_id, "port_id": self.port_id},
+            )
         
         # Wait for port to settle
         await asyncio.sleep(0.5)

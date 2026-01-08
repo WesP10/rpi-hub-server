@@ -520,8 +520,9 @@ class HubAgent:
             error: Optional error message
         """
         payload = {
-            "taskId": task_id,
+            "task_id": task_id,
             "status": status,
+            "timestamp": datetime.utcnow().isoformat(),
         }
 
         if progress is not None:
@@ -550,8 +551,11 @@ class HubAgent:
         
         # Add to buffer (synchronous operation)
         payload = {
-            "taskId": task_id,
+            "task_id": task_id,
             "status": status,
+            "command_type": task_status_data.get("command_type"),
+            "port_id": task_status_data.get("port_id"),
+            "timestamp": task_status_data.get("timestamp") or datetime.utcnow().isoformat(),
         }
         
         if result is not None:
