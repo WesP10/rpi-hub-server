@@ -340,6 +340,7 @@ async def lifespan(app: FastAPI):
                         exc_info=True
                     )
             
+            # Register callbacks BEFORE starting USB mapper to catch initial scan
             usb_mapper.on_device_connected(auto_connect_device)
             usb_mapper.on_device_disconnected(auto_disconnect_device)
             
@@ -348,7 +349,7 @@ async def lifespan(app: FastAPI):
                 extra={"event": "auto_connect_enabled"}
             )
         
-        # Start USB port mapper scanning
+        # Start USB port mapper scanning (this triggers initial scan which now has callbacks registered)
         await usb_mapper.start(scan_interval=settings.serial.scan_interval)
         
         # Initialize Command Handler with task status callback
