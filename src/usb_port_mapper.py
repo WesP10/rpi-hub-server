@@ -183,6 +183,27 @@ class USBPortMapper:
                 location=device_info.location,
             )
             
+            # Check if this Arduino's serial number already exists in a different mapping
+            if device_info.serial_number:
+                for existing_port_id, existing_device in list(self.port_id_to_device_info.items()):
+                    # If same serial number but different port_id/device_path, remove old mapping
+                    if (existing_device.serial_number == device_info.serial_number and 
+                        existing_device.device_path != device_info.device_path):
+                        self.logger.info(
+                            "duplicate_serial_removed",
+                            f"Removing old mapping for Arduino with serial {device_info.serial_number}",
+                            old_port_id=existing_port_id,
+                            old_device_path=existing_device.device_path,
+                            new_port_id=port_id,
+                            new_device_path=device_info.device_path,
+                            serial_number=device_info.serial_number,
+                        )
+                        # Clean up old mapping
+                        self.device_path_to_port_id.pop(existing_device.device_path, None)
+                        self.port_id_to_device_info.pop(existing_port_id, None)
+                        self._device_signatures.pop(existing_device.device_path, None)
+                        removed_device_ids.append(existing_port_id)
+            
             # Check if this is a new device or existing
             is_new = device_info.device_path not in self.device_path_to_port_id
             

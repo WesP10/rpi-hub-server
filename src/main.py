@@ -260,6 +260,14 @@ async def lifespan(app: FastAPI):
             async def auto_connect_device(device_info):
                 """Automatically connect to detected devices."""
                 try:
+                    # Check if already connected to this port_id to avoid duplicate connections
+                    if serial_manager.get_connection(device_info.port_id):
+                        logger.debug(
+                            f"Device {device_info.port_id} already connected, skipping auto-connect",
+                            extra={"event": "auto_connect_skipped", "port_id": device_info.port_id}
+                        )
+                        return
+                    
                     import time
                     session_id = f"auto-session-{int(time.time())}-{device_info.port_id[:8]}"
                     
