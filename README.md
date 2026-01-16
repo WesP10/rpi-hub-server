@@ -10,13 +10,13 @@ FastAPI server for Raspberry Pi that bridges Arduino serial data to laptop over 
 - Comprehensive JSON structured logging
 - 10MB circular buffer for backpressure handling
 - Health monitoring with system metrics
-- Flash firmware to connected devices
+- Flash firmware to connected devices (supports .ino compilation)
 - Hotplug device detection
 
 ## Prerequisites
 
 - Python 3.11+
-- arduino-cli (for baud rate detection)
+- arduino-cli (for board detection and sketch compilation)
 
 ### Installing arduino-cli
 
@@ -27,6 +27,21 @@ curl -fsSL https://raw.githubusercontent.com/arduino/arduino-cli/master/install.
 Add to PATH:
 ```bash
 export PATH=$PATH:$HOME/bin
+```
+
+Install required Arduino cores for compilation:
+```bash
+arduino-cli core update-index
+arduino-cli core install arduino:avr  # For Uno, Mega, Nano
+arduino-cli core install esp32:esp32  # For ESP32 (requires additional board manager URL)
+```
+
+For ESP32 support, add the board manager URL first:
+```bash
+arduino-cli config init
+arduino-cli config add board_manager.additional_urls https://raw.githubusercontent.com/espressif/arduino-esp32/gh-pages/package_esp32_index.json
+arduino-cli core update-index
+arduino-cli core install esp32:esp32
 ```
 
 ## Installation
@@ -107,14 +122,15 @@ pip install -r requirements.txt
     "encoding": "utf-8"
   }
   ```
-- `POST /tasks/flash` - Flash firmware to device
+- `POST /tasks/flash` - Flash firmware to device (accepts .ino source or .hex binary)
   ```json
   {
     "portId": "port-abc123",
-    "firmwareData": "base64-encoded-hex-file",
+    "firmwareData": "base64-encoded-ino-or-hex-file",
     "boardFqbn": "arduino:avr:uno"
   }
   ```
+  Note: boardFqbn is required for .ino source, optional for .hex (auto-detected)
 - `POST /tasks/restart` - Restart connected device
   ```json
   {
