@@ -211,10 +211,11 @@ class FlashTask(BaseTask):
         
         # Create temporary directory for sketch (minimal lifetime)
         sketch_dir = tempfile.mkdtemp(prefix='arduino_sketch_')
-        sketch_file = os.path.join(sketch_dir, 'sketch.ino')
+        sketch_name = os.path.basename(sketch_dir)
+        sketch_file = os.path.join(sketch_dir, f"{sketch_name}.ino")
         
         try:
-            # Write .ino source to file (only when necessary for compilation)
+            # Write .ino source to the required main-file name for arduino-cli
             with open(sketch_file, 'wb') as f:
                 f.write(firmware_bytes)
             
@@ -223,20 +224,21 @@ class FlashTask(BaseTask):
                 extra={
                     "task_id": self.task_id,
                     "board_fqbn": board_fqbn,
-                    "sketch_dir": sketch_dir
+                    "sketch_dir": sketch_dir,
+                    "sketch_file": sketch_file
                 }
             )
             
             start_time = time.time()
             
-            # Compile using arduino-cli (resolve path and provide clear error if missing)
+            # Compile using arduino-cli (pass sketch directory)
             arduino_cli = self._ensure_arduino_cli_available()
             process = await asyncio.create_subprocess_exec(
                 arduino_cli,
                 "compile",
                 "--fqbn", board_fqbn,
                 "--output-dir", sketch_dir,
-                sketch_file,
+                sketch_dir,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE
             )
@@ -269,7 +271,7 @@ class FlashTask(BaseTask):
             )
             
             # Find the compiled .hex file
-            hex_file = os.path.join(sketch_dir, 'sketch.ino.hex')
+            hex_file = os.path.join(sketch_dir, f'{sketch_name}.ino.hex')
             if not os.path.exists(hex_file):
                 # Try alternative naming (some boards use different names)
                 hex_files = [f for f in os.listdir(sketch_dir) if f.endswith('.hex')]
