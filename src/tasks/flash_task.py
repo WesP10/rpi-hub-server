@@ -128,6 +128,48 @@ class FlashTask(BaseTask):
         ])
         
         return has_arduino_keywords or (has_code_patterns and not looks_like_hex)
+
+    def _get_arduino_cli_path(self) -> Optional[str]:
+        """
+        Resolve the path to the `arduino-cli` executable.
+
+        Priority:
+        - If `ARDUINO_CLI_PATH` env var is set and points to an executable, use it.
+        - If `arduino-cli` is discoverable on PATH via `shutil.which`, use that.
+        - Otherwise return None.
+        """
+        env_path = os.environ.get("ARDUINO_CLI_PATH")
+        if env_path:
+            candidate = env_path
+            # If directory given, append binary name
+            if os.path.isdir(candidate):
+                candidate = os.path.join(candidate, "arduino-cli")
+            if os.path.exists(candidate) and os.access(candidate, os.X_OK):
+                return candidate
+            logger.warning(
+                "Environment variable ARDUINO_CLI_PATH is set but not executable or missing",
+                extra={"task_id": self.task_id, "ARDUINO_CLI_PATH": env_path}
+            )
+        # Fallback to PATH
+        found = shutil.which("arduino-cli")
+        if found:
+            return found
+        return None
+
+    def _ensure_arduino_cli_available(self) -> str:
+        """
+        Ensure `arduino-cli` is available and return the path to it.
+
+        Raises:
+            RuntimeError: if not available with actionable guidance
+        """
+        path = self._get_arduino_cli_path()
+        if not path:
+            raise RuntimeError(
+                "arduino-cli not found. Please install arduino-cli and ensure it's in PATH "
+                "or set ARDUINO_CLI_PATH to its full path. See: https://arduino.github.io/arduino-cli/installation/"
+            )
+        return path
     
     async def _write_hex_to_temp(self, firmware_bytes: bytes) -> str:
         """
@@ -187,9 +229,10 @@ class FlashTask(BaseTask):
             
             start_time = time.time()
             
-            # Compile using arduino-cli
+            # Compile using arduino-cli (resolve path and provide clear error if missing)
+            arduino_cli = self._ensure_arduino_cli_available()
             process = await asyncio.create_subprocess_exec(
-                "arduino-cli",
+                arduino_cli,
                 "compile",
                 "--fqbn", board_fqbn,
                 "--output-dir", sketch_dir,
@@ -433,8 +476,9 @@ class FlashTask(BaseTask):
             RuntimeError: If board detection fails
         """
         try:
+            arduino_cli = self._ensure_arduino_cli_available()
             process = await asyncio.create_subprocess_exec(
-                "arduino-cli",
+                arduino_cli,
                 "board",
                 "list",
                 "--format",
@@ -493,8 +537,9 @@ class FlashTask(BaseTask):
         start_time = time.time()
         
         try:
+            arduino_cli = self._ensure_arduino_cli_available()
             process = await asyncio.create_subprocess_exec(
-                "arduino-cli",
+                arduino_cli,
                 "upload",
                 "-p", port_path,
                 "-b", board_fqbn,
